@@ -28,6 +28,8 @@ import (
 	"6.5840/labrpc"
 )
 
+var electionDuration = 5 * time.Second
+
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -75,6 +77,8 @@ type Raft struct {
 	// Volatile State on Leaders
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+
+	electionShouldStart bool
 }
 
 // return currentTerm and whether this server
@@ -242,17 +246,45 @@ func (rf *Raft) ticker() {
 		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other servers
-		for idx := range rf.peers {
-			// send RequestVote RPC to peer
-			args := &RequestVoteArgs{}
-			reply := &RequestVoteReply{}
-			rf.sendRequestVote(idx, args, reply)
+		rf.mu.Lock()
+		start := rf.electionShouldStart
+		if start {
+			rf.electionShouldStart = false // reset to false, so we don't start an election every time the ticker runs
+		}
+		rf.mu.Unlock()
+
+		if start {
+			for idx := range rf.peers {
+				// send RequestVote RPC to peer
+				args := &RequestVoteArgs{}
+				reply := &RequestVoteReply{}
+				rf.sendRequestVote(idx, args, reply)
+			}
 		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+	}
+}
+
+func (rf *Raft) electionTimeout() {
+	// sleeps for the election timeout duration
+	// when we wake up, we check if we have heard from the leader via AppendEntries RPC or if we have granted our vote
+	// to a candidate, if not, we start an election
+
+	// We signal an election should be started by sending a message on a channel that the ticker listens to
+
+	for !rf.killed() {
+		// sleep for the electionDuration
+		time.Sleep(electionDuration)
+
+		// check if the election timeout has elapsed without receiving AppendEntries RPC from current leader or granting vote to candidate
+		// if so, convert to candidate
+		rf.mu.Lock()
+		rf.electionShouldStart = true
+		rf.mu.Unlock()
 	}
 }
 
@@ -276,6 +308,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// start election timeout
+	go rf.electionTimeout()
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
