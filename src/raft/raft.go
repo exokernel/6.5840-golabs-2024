@@ -202,7 +202,10 @@ func (rf *Raft) lastLogTerm() int {
 }
 
 func (rf *Raft) lastLogIndex() int {
-	return len(rf.log)
+	if len(rf.log) == 0 {
+		return -1
+	}
+	return len(rf.log) - 1
 }
 
 // example code to send a RequestVote RPC to a server.
