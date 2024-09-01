@@ -51,7 +51,10 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type LogEntry struct{}
+type LogEntry struct {
+	command []byte // command for state machine
+	term    int    // term when entry was received by leader (first index is 1)
+}
 
 // A Go object implementing a single Raft peer.
 type Raft struct {
@@ -67,7 +70,7 @@ type Raft struct {
 
 	// Persistent State
 	currentTerm int         // latest term server has seen (initialized to 0 on first boot, increases monotonically)
-	votedFor    int         // candidateId that received vote in current term (or null if none)
+	votedFor    *int        // candidateId that received vote in current term (or null if none)
 	log         []*LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
 
 	// Volatile State on All Servers
@@ -160,6 +163,46 @@ type RequestVoteReply struct {
 // This is called to handle the RequestVote RPC we get from other peers
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Initialize reply
+	reply.term = rf.currentTerm
+	reply.voteGranted = false
+
+	// Reply false if term < currentTerm
+	if args.term < rf.currentTerm {
+		return
+	}
+
+	// If term > currentTerm, update currentTerm and convert to follower
+	if args.term > rf.currentTerm {
+		rf.currentTerm = args.term
+		rf.votedFor = nil
+		rf.persist()
+	}
+
+	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
+	if rf.votedFor == nil || *rf.votedFor == args.candidateId {
+		// Check if candidate's log is at least as up-to-date as receiver's log
+		if args.lastLogTerm > rf.lastLogTerm() || (args.lastLogTerm == rf.lastLogTerm() && args.lastLogIndex >= rf.lastLogIndex()) {
+			reply.voteGranted = true
+			rf.votedFor = &args.candidateId
+			rf.persist()
+		}
+	}
+}
+
+// Helper functions to get the last log term and index
+func (rf *Raft) lastLogTerm() int {
+	if len(rf.log) == 0 {
+		return 0
+	}
+	return rf.log[len(rf.log)-1].term
+}
+
+func (rf *Raft) lastLogIndex() int {
+	return len(rf.log)
 }
 
 // example code to send a RequestVote RPC to a server.
