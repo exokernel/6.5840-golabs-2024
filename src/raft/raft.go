@@ -282,7 +282,7 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) ticker() {
-	for rf.killed() == false {
+	for !rf.killed() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
@@ -302,7 +302,10 @@ func (rf *Raft) ticker() {
 		if start {
 			for idx := range rf.peers {
 				// send RequestVote RPC to peer
-				args := &RequestVoteArgs{}
+				args := &RequestVoteArgs{
+					term:        rf.currentTerm,
+					candidateId: rf.me,
+				}
 				reply := &RequestVoteReply{}
 				rf.sendRequestVote(idx, args, reply)
 			}
@@ -319,9 +322,6 @@ func (rf *Raft) electionTimeout() {
 	// sleeps for the election timeout duration
 	// when we wake up, we check if we have heard from the leader via AppendEntries RPC or if we have granted our vote
 	// to a candidate, if not, we start an election
-
-	// We signal an election should be started by sending a message on a channel that the ticker listens to
-
 	for !rf.killed() {
 		// sleep for the electionDuration
 		time.Sleep(electionDuration)
