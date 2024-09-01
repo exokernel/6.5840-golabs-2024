@@ -138,15 +138,22 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
+	term         int // candidate’s term
+	candidateId  int // candidate requesting vote
+	lastLogIndex int // index of candidate’s last log entry (§5.4)
+	lastLogTerm  int // term of candidate’s last log entry (§5.4)
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
+	term        int  // currentTerm, for candidate to update itself
+	voteGranted bool // true means candidate received vote
 }
 
 // example RequestVote RPC handler.
+// This is called to handle the RequestVote RPC we get from other peers
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 }
@@ -229,6 +236,18 @@ func (rf *Raft) ticker() {
 
 		// Your code here (3A)
 		// Check if a leader election should be started.
+
+		// TODO: Send out RequestVote RPCs when it hasn't heard from another peer for a while. Implement the RequestVote() RPC handler so that servers will vote for one another.
+
+		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
+		// check if it has been too long since we last heard from the leader or since we last voted for a leader
+		// if so, start election by sending a RequestVote RPC to all other servers
+		for idx := range rf.peers {
+			// send RequestVote RPC to peer
+			args := &RequestVoteArgs{}
+			reply := &RequestVoteReply{}
+			rf.sendRequestVote(idx, args, reply)
+		}
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
