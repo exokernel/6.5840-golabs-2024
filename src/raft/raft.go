@@ -287,8 +287,6 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-		// TODO: Send out RequestVote RPCs when it hasn't heard from another peer for a while. Implement the RequestVote() RPC handler so that servers will vote for one another.
-
 		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other servers
@@ -300,6 +298,22 @@ func (rf *Raft) ticker() {
 		rf.mu.Unlock()
 
 		if start {
+			// On conversion to candidate, start election:
+			rf.mu.Lock()
+
+			// • Increment currentTerm
+			rf.currentTerm++
+			// • Vote for self
+			rf.votedFor = &rf.me
+
+			rf.persist()
+			rf.mu.Unlock()
+
+			// • Reset election timer (If we are here it means the election timer has already elapsed without receiving
+			//   a message from the leader or a vote request from another candidate. A new election timer has already
+			//   been started in the electionTimeout goroutine)
+
+			// • Send RequestVote RPCs to all other servers
 			for idx := range rf.peers {
 				// send RequestVote RPC to peer
 				args := &RequestVoteArgs{
