@@ -28,7 +28,9 @@ import (
 	"6.5840/labrpc"
 )
 
-var electionDuration = 5 * time.Second
+// Because the tester limits you tens of heartbeats per second, you will have to use an election timeout larger than the
+// paper's 150 to 300 milliseconds, but not too large, because then you may fail to elect a leader within five seconds.
+const electionTimeout = 2 * time.Second
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -51,7 +53,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type LogEntry struct {
+type logEntry struct {
 	command []byte // command for state machine
 	term    int    // term when entry was received by leader (first index is 1)
 }
@@ -71,7 +73,7 @@ type Raft struct {
 	// Persistent State
 	currentTerm int         // latest term server has seen (initialized to 0 on first boot, increases monotonically)
 	votedFor    *int        // candidateId that received vote in current term (or null if none)
-	log         []*LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
+	log         []*logEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
 
 	// Volatile State on All Servers
 	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
@@ -81,7 +83,9 @@ type Raft struct {
 	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
 	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
 
-	electionShouldStart bool
+	// Election state
+	electionShouldStart   bool
+	receivedAppendEntries bool
 }
 
 // return currentTerm and whether this server
@@ -323,13 +327,18 @@ func (rf *Raft) electionTimeout() {
 	// when we wake up, we check if we have heard from the leader via AppendEntries RPC or if we have granted our vote
 	// to a candidate, if not, we start an election
 	for !rf.killed() {
-		// sleep for the electionDuration
-		time.Sleep(electionDuration)
+		// sleep for the electionTimeout duration
+		time.Sleep(electionTimeout)
 
 		// check if the election timeout has elapsed without receiving AppendEntries RPC from current leader or granting vote to candidate
 		// if so, convert to candidate
 		rf.mu.Lock()
-		rf.electionShouldStart = true
+		if !rf.receivedAppendEntries && rf.votedFor == nil {
+			rf.electionShouldStart = true
+		}
+		// regardless of if an election should be started, reset the receivedAppendEntries flag
+		// so we can check it again in the next electionTimeout
+		rf.receivedAppendEntries = false
 		rf.mu.Unlock()
 	}
 }
