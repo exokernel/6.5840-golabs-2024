@@ -28,10 +28,6 @@ import (
 	"6.5840/labrpc"
 )
 
-// Because the tester limits you tens of heartbeats per second, you will have to use an election timeout larger than the
-// paper's 150 to 300 milliseconds, but not too large, because then you may fail to elect a leader within five seconds.
-const electionTimeout = 2 * time.Second
-
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
 // tester) on the same server, via the applyCh passed to Make(). set
@@ -327,7 +323,12 @@ func (rf *Raft) electionTimeout() {
 	// when we wake up, we check if we have heard from the leader via AppendEntries RPC or if we have granted our vote
 	// to a candidate, if not, we start an election
 	for !rf.killed() {
-		// sleep for the electionTimeout duration
+		// sleep for the electionTimeout duration. Add some random jitter to prevent split votes
+		// Because the tester limits you tens of heartbeats per second, you will have to use an election timeout larger
+		// than the paper's 150 to 300 milliseconds, but not too large, because then you may fail to elect a leader
+		// within five seconds.
+		ms := 1500 + (rand.Int63() % 500) // between 1.5 and 2 seconds
+		electionTimeout := time.Duration(ms) * time.Millisecond
 		time.Sleep(electionTimeout)
 
 		// check if the election timeout has elapsed without receiving AppendEntries RPC from current leader or granting vote to candidate
@@ -337,7 +338,8 @@ func (rf *Raft) electionTimeout() {
 			rf.electionShouldStart = true
 		}
 		// regardless of if an election should be started, reset the receivedAppendEntries flag
-		// so we can check it again in the next electionTimeout
+		// so we can check it again in the next electionTimeout. We don't reset votedFor here because
+		// we want to remember who we voted for in the last election until a new term starts.
 		rf.receivedAppendEntries = false
 		rf.mu.Unlock()
 	}
