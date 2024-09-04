@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -145,49 +146,50 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (3A, 3B).
-	term         int // candidate’s term
-	candidateId  int // candidate requesting vote
-	lastLogIndex int // index of candidate’s last log entry (§5.4)
-	lastLogTerm  int // term of candidate’s last log entry (§5.4)
+	Term         int // candidate’s term
+	CandidateId  int // candidate requesting vote
+	LastLogIndex int // index of candidate’s last log entry (§5.4)
+	LastLogTerm  int // term of candidate’s last log entry (§5.4)
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (3A).
-	term        int  // currentTerm, for candidate to update itself
-	voteGranted bool // true means candidate received vote
+	Term        int  // currentTerm, for candidate to update itself
+	VoteGranted bool // true means candidate received vote
 }
 
 // example RequestVote RPC handler.
 // This is called to handle the RequestVote RPC we get from other peers
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	log.Printf("Server %d: RequestVote RPC received from server %d", rf.me, args.CandidateId)
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	// Initialize reply
-	reply.term = rf.currentTerm
-	reply.voteGranted = false
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
 
 	// Reply false if term < currentTerm
-	if args.term < rf.currentTerm {
+	if args.Term < rf.currentTerm {
 		return
 	}
 
 	// If term > currentTerm, update currentTerm and convert to follower
-	if args.term > rf.currentTerm {
-		rf.currentTerm = args.term
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
 		rf.votedFor = nil
 		rf.persist()
 	}
 
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
-	if rf.votedFor == nil || *rf.votedFor == args.candidateId {
+	if rf.votedFor == nil || *rf.votedFor == args.CandidateId {
 		// Check if candidate's log is at least as up-to-date as receiver's log
-		if args.lastLogTerm > rf.lastLogTerm() || (args.lastLogTerm == rf.lastLogTerm() && args.lastLogIndex >= rf.lastLogIndex()) {
-			reply.voteGranted = true
-			rf.votedFor = &args.candidateId
+		if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
+			reply.VoteGranted = true
+			rf.votedFor = &args.CandidateId
 			rf.persist()
 		}
 	}
@@ -298,6 +300,7 @@ func (rf *Raft) ticker() {
 		rf.mu.Unlock()
 
 		if start {
+			log.Printf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
 			// On conversion to candidate, start election:
 			rf.mu.Lock()
 
@@ -317,8 +320,8 @@ func (rf *Raft) ticker() {
 			for idx := range rf.peers {
 				// send RequestVote RPC to peer
 				args := &RequestVoteArgs{
-					term:        rf.currentTerm,
-					candidateId: rf.me,
+					Term:        rf.currentTerm,
+					CandidateId: rf.me,
 				}
 				reply := &RequestVoteReply{}
 				rf.sendRequestVote(idx, args, reply)
@@ -337,6 +340,7 @@ func (rf *Raft) electionTimeout() {
 	// when we wake up, we check if we have heard from the leader via AppendEntries RPC or if we have granted our vote
 	// to a candidate, if not, we start an election
 	for !rf.killed() {
+		log.Printf("Server %d: electionTimeout duration started", rf.me)
 		// sleep for the electionTimeout duration. Add some random jitter to prevent split votes
 		// Because the tester limits you tens of heartbeats per second, you will have to use an election timeout larger
 		// than the paper's 150 to 300 milliseconds, but not too large, because then you may fail to elect a leader
@@ -350,6 +354,7 @@ func (rf *Raft) electionTimeout() {
 		rf.mu.Lock()
 		if !rf.receivedAppendEntries && rf.votedFor == nil {
 			rf.electionShouldStart = true
+			log.Printf("Server %d: Starting election", rf.me)
 		}
 		// regardless of if an election should be started, reset the receivedAppendEntries flag
 		// so we can check it again in the next electionTimeout. We don't reset votedFor here because
