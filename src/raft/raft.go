@@ -318,6 +318,9 @@ func (rf *Raft) ticker() {
 
 			// • Send RequestVote RPCs to all other servers
 			for idx := range rf.peers {
+				if idx == rf.me {
+					continue // don't send RequestVote RPC to self
+				}
 				// send RequestVote RPC to peer
 				args := &RequestVoteArgs{
 					Term:        rf.currentTerm,
