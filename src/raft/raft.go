@@ -300,6 +300,8 @@ func (rf *Raft) ticker() {
 		rf.mu.Unlock()
 
 		if start {
+			replyChan := make(chan *RequestVoteReply)
+
 			log.Printf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
 			// On conversion to candidate, start election:
 			rf.mu.Lock()
@@ -327,7 +329,35 @@ func (rf *Raft) ticker() {
 					CandidateId: rf.me,
 				}
 				reply := &RequestVoteReply{}
-				rf.sendRequestVote(idx, args, reply)
+
+				go func(idx int, args *RequestVoteArgs, reply *RequestVoteReply, replyChan chan *RequestVoteReply) {
+					gotreply := rf.sendRequestVote(idx, args, reply)
+					if gotreply {
+						log.Printf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
+						replyChan <- reply
+					} else {
+						log.Printf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
+					}
+				}(idx, args, reply, replyChan)
+			}
+
+			select {
+			case reply := <-replyChan:
+				// handle reply
+				if reply.Term > rf.currentTerm {
+					// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
+					rf.mu.Lock()
+					rf.currentTerm = reply.Term
+					rf.votedFor = nil
+					rf.persist()
+					rf.mu.Unlock()
+				} else {
+					// if RPC response contains term T < currentTerm: ignore
+					// if RPC response contains term T = currentTerm: count vote
+					if reply.VoteGranted {
+						// count vote
+					}
+				}
 			}
 		}
 
