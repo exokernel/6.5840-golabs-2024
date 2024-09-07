@@ -366,7 +366,7 @@ func (rf *Raft) ticker() {
 	rf.electionTimeout = 1500*time.Millisecond + time.Duration(rand.Int63()%500)*time.Millisecond // between 1.5 and 2 seconds
 	log.Printf("Server %d: Election timeout set to %v", rf.me, rf.electionTimeout)
 
-	rf.heartbeat = 100 * time.Millisecond // 100 milliseconds which is
+	rf.heartbeat = 100 * time.Millisecond // 100 milliseconds which is 10 heartbeats per second
 
 	for !rf.killed() {
 		// Your code here (3A)
