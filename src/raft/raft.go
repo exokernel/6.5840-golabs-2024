@@ -110,7 +110,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (3A).
+	rf.mu.Lock()
 	term = rf.currentTerm
+	rf.mu.Unlock()
 	isleader = rf.State() == Leader
 	return term, isleader
 }
@@ -230,37 +232,48 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 
 	// Your code here (3A, 3B).
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	log.Printf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
 
 	// Initialize reply
+	log.Printf("Server %d: locking mutex", rf.me)
+	rf.mu.Lock()
 	reply.Term = rf.currentTerm
 	reply.Success = false
 
 	// Reset the election timeout because we have received an AppendEntries RPC
 	rf.lastContact = time.Now()
+	rf.mu.Unlock()
+
 	switch rf.State() {
 	case Follower:
 		// already a follower, just log the message
 		log.Printf("Server %d: Recieved AppendEntries and already a follower", rf.me)
 	case Candidate:
 		// switch to follower
+		rf.setState(Follower)
 		log.Printf("Server %d: Recieved AppendEntries and became follower", rf.me)
 	case Leader:
 		log.Printf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
 	}
 
+	log.Printf("Server %d: locking mutex", rf.me)
+	rf.mu.Lock()
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		log.Printf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+		rf.mu.Unlock()
 		return
 	}
+	currentterm := rf.currentTerm
+	rf.mu.Unlock()
 
-	if args.Term > rf.currentTerm {
+	if args.Term > currentterm {
+		log.Printf("Server %d: locking mutex", rf.me)
+		rf.mu.Lock()
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
 		rf.persist()
+		rf.mu.Unlock()
 		if rf.State() != Follower {
 			rf.setState(Follower)
 		}
@@ -363,10 +376,15 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) setState(state state) {
+	log.Printf("Server %d: locking mutex in setState", rf.me)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	rf.state = state
 }
 
 func (rf *Raft) State() state {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	return rf.state
 }
 
@@ -391,15 +409,16 @@ func (rf *Raft) ticker() {
 		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other servers
+		log.Printf("Server %d: locking mutex 1", rf.me)
 		rf.mu.Lock()
 		lastContact := rf.lastContact
 		electionTimeout := rf.electionTimeout
-		state := rf.State()
 		rf.mu.Unlock()
+		state := rf.State()
 
 		if time.Since(lastContact) >= electionTimeout && (state == Follower || state == Candidate) {
-			rf.mu.Lock()
 			rf.setState(Candidate)
+			rf.mu.Lock()
 			rf.votedFor = NobodyID
 			votesGranted = 0
 
@@ -447,7 +466,7 @@ func (rf *Raft) ticker() {
 		}
 
 		// read from channels
-		if rf.State() == Candidate {
+		if state == Candidate {
 			select {
 			case voteReply := <-voteChan:
 				// handle reply
@@ -477,7 +496,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 
-		if rf.State() == Leader {
+		if state == Leader {
 
 			if time.Since(rf.lastHeartbeat) >= rf.heartbeat {
 
@@ -523,7 +542,7 @@ func (rf *Raft) ticker() {
 			}
 		}
 
-		if rf.State() == Follower {
+		if state == Follower {
 			// we don't need to do anything here because we are already listening for RequestVote RPCs
 			// just log something
 			log.Printf("Server %d: Waiting for RequestVote RPCs or AppendEntries RPCs", rf.me)
