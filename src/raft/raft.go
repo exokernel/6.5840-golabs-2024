@@ -39,6 +39,8 @@ const (
 )
 
 const NobodyID = -1
+const electionTimeoutMin = 1000
+const electionTimeoutVar = 1000 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the election timeout
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -201,7 +203,6 @@ type AppendEntriesReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	log.Printf("Server %d: RequestVote RPC received from server %d, votedFor: %d, term: %d", rf.me, args.CandidateId, rf.votedFor, rf.currentTerm)
 
 	// Initialize reply
@@ -217,6 +218,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.votedFor = NobodyID
+		rf.persist()
+		rf.mu.Unlock()
+		rf.setState(Follower)
+		rf.mu.Lock()
+	}
+
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
 	if rf.votedFor == NobodyID || rf.votedFor == args.CandidateId {
 		// Check if candidate's log is at least as up-to-date as receiver's log
@@ -227,6 +237,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		log.Printf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
 		//}
 	}
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
@@ -235,9 +246,8 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	log.Printf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
 
 	// Initialize reply
-	log.Printf("Server %d: locking mutex", rf.me)
+	//log.Printf("Server %d: locking mutex", rf.me)
 	rf.mu.Lock()
-	reply.Term = rf.currentTerm
 	reply.Success = false
 
 	// Reset the election timeout because we have received an AppendEntries RPC
@@ -256,7 +266,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		log.Printf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
 	}
 
-	log.Printf("Server %d: locking mutex", rf.me)
+	//log.Printf("Server %d: locking mutex", rf.me)
 	rf.mu.Lock()
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
@@ -268,7 +278,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	rf.mu.Unlock()
 
 	if args.Term > currentterm {
-		log.Printf("Server %d: locking mutex", rf.me)
+		//log.Printf("Server %d: locking mutex", rf.me)
 		rf.mu.Lock()
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
@@ -279,6 +289,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		}
 	}
 
+	reply.Term = rf.currentTerm
 	reply.Success = true
 }
 
@@ -376,7 +387,7 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) setState(state state) {
-	log.Printf("Server %d: locking mutex in setState", rf.me)
+	//log.Printf("Server %d: locking mutex in setState", rf.me)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.state = state
@@ -397,10 +408,15 @@ func (rf *Raft) ticker() {
 
 	votesGranted := 0
 
-	rf.electionTimeout = 1500*time.Millisecond + time.Duration(rand.Int63()%500)*time.Millisecond // between 1.5 and 2 seconds
+	rf.votedFor = NobodyID
+	rf.lastContact = time.Now()
+	rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
 	log.Printf("Server %d: Election timeout set to %v", rf.me, rf.electionTimeout)
 
 	rf.heartbeat = 100 * time.Millisecond // 100 milliseconds which is 10 heartbeats per second
+
+	// make a waitgroup to wait for all goroutines to finish
+	wg := sync.WaitGroup{}
 
 	for !rf.killed() {
 		// Your code here (3A)
@@ -409,61 +425,12 @@ func (rf *Raft) ticker() {
 		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other servers
-		log.Printf("Server %d: locking mutex 1", rf.me)
+		//log.Printf("Server %d: locking mutex 1", rf.me)
 		rf.mu.Lock()
 		lastContact := rf.lastContact
 		electionTimeout := rf.electionTimeout
 		rf.mu.Unlock()
 		state := rf.State()
-
-		if time.Since(lastContact) >= electionTimeout && (state == Follower || state == Candidate) {
-			rf.setState(Candidate)
-			rf.mu.Lock()
-			rf.votedFor = NobodyID
-			votesGranted = 0
-
-			log.Printf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
-
-			// reset the election timeout to now + sometime + random jitter
-			rf.electionTimeout = 1500*time.Millisecond + time.Duration(rand.Int63()%500)*time.Millisecond // between 1.5 and 2 seconds
-			log.Printf("Server %d: Election timeout reset to %v", rf.me, rf.electionTimeout)
-
-			// On conversion to candidate, start election:
-
-			// • Increment currentTerm
-			rf.currentTerm++
-			// • Vote for self
-			votesGranted++
-			rf.persist()
-			rf.mu.Unlock()
-
-			// • Reset election timer (If we are here it means the election timer has already elapsed without receiving
-			//   a message from the leader or a vote request from another candidate. A new election timer has already
-			//   been started in the electionTimeout goroutine)
-
-			// • Send RequestVote RPCs to all other servers
-			for idx := range rf.peers {
-				if idx == rf.me {
-					continue // don't send RequestVote RPC to self
-				}
-				// send RequestVote RPC to peer
-				req := &RequestVoteArgs{
-					Term:        rf.currentTerm,
-					CandidateId: rf.me,
-				}
-				reply := &RequestVoteReply{}
-
-				go func(idx int, request *RequestVoteArgs, reply *RequestVoteReply, replyChan chan *RequestVoteReply) {
-					gotreply := rf.sendRequestVote(idx, request, reply)
-					if gotreply {
-						log.Printf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
-						voteChan <- reply
-					} else {
-						log.Printf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
-					}
-				}(idx, req, reply, voteChan)
-			}
-		}
 
 		// read from channels
 		if state == Candidate {
@@ -472,6 +439,7 @@ func (rf *Raft) ticker() {
 				// handle reply
 				if voteReply.Term > rf.currentTerm {
 					// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
+					log.Printf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, voteReply.Term, rf.currentTerm)
 					rf.currentTerm = voteReply.Term
 					rf.votedFor = NobodyID
 					rf.persist()
@@ -497,7 +465,6 @@ func (rf *Raft) ticker() {
 		}
 
 		if state == Leader {
-
 			if time.Since(rf.lastHeartbeat) >= rf.heartbeat {
 
 				rf.lastHeartbeat = time.Now()
@@ -510,10 +477,13 @@ func (rf *Raft) ticker() {
 					}
 					// send AppendEntries RPC to peer
 					req := &AppendEntries{
+						Term:     rf.currentTerm,
 						LeaderId: rf.me,
 					}
 					reply := &AppendEntriesReply{}
+					wg.Add(1)
 					go func(idx int, request *AppendEntries, reply *AppendEntriesReply, appendChan chan *AppendEntriesReply) {
+						defer wg.Done()
 						gotreply := rf.sendAppendEntries(idx, request, reply)
 						if gotreply {
 							log.Printf("Server %d: AppendEntries RPC reply received from server %d", rf.me, idx)
@@ -530,7 +500,6 @@ func (rf *Raft) ticker() {
 				// handle reply
 				if appendReply.Term > rf.currentTerm {
 					// become a follower
-					rf.currentTerm = appendReply.Term
 					rf.votedFor = NobodyID
 					rf.persist()
 					rf.setState(Follower)
@@ -545,7 +514,59 @@ func (rf *Raft) ticker() {
 		if state == Follower {
 			// we don't need to do anything here because we are already listening for RequestVote RPCs
 			// just log something
-			log.Printf("Server %d: Waiting for RequestVote RPCs or AppendEntries RPCs", rf.me)
+			//log.Printf("Server %d: Waiting for RequestVote RPCs or AppendEntries RPCs", rf.me)
+		}
+
+		if time.Since(lastContact) >= electionTimeout && (state == Follower || state == Candidate) {
+			rf.setState(Candidate)
+			rf.mu.Lock()
+			rf.votedFor = NobodyID
+			votesGranted = 0
+
+			log.Printf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
+
+			// reset the election timeout to now + sometime + random jitter
+			rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
+			log.Printf("Server %d: Election timeout reset to %v", rf.me, rf.electionTimeout)
+
+			// On conversion to candidate, start election:
+
+			// • Increment currentTerm
+			log.Printf("Server %d: Incrementing currentTerm from %d to %d", rf.me, rf.currentTerm, rf.currentTerm+1)
+			rf.currentTerm++
+			// • Vote for self
+			votesGranted++
+			rf.persist()
+			rf.mu.Unlock()
+
+			// • Reset election timer (If we are here it means the election timer has already elapsed without receiving
+			//   a message from the leader or a vote request from another candidate. A new election timer has already
+			//   been started in the electionTimeout goroutine)
+
+			// • Send RequestVote RPCs to all other servers
+			for idx := range rf.peers {
+				if idx == rf.me {
+					continue // don't send RequestVote RPC to self
+				}
+				// send RequestVote RPC to peer
+				req := &RequestVoteArgs{
+					Term:        rf.currentTerm,
+					CandidateId: rf.me,
+				}
+				reply := &RequestVoteReply{}
+
+				wg.Add(1)
+				go func(idx int, request *RequestVoteArgs, reply *RequestVoteReply, replyChan chan *RequestVoteReply) {
+					defer wg.Done()
+					gotreply := rf.sendRequestVote(idx, request, reply)
+					if gotreply {
+						log.Printf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
+						voteChan <- reply
+					} else {
+						log.Printf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
+					}
+				}(idx, req, reply, voteChan)
+			}
 		}
 
 		// pause for a random amount of time between 50 and 350
@@ -553,6 +574,7 @@ func (rf *Raft) ticker() {
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
+	wg.Wait()
 }
 
 //func (rf *Raft) electionTimeout() {
