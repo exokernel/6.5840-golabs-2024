@@ -39,8 +39,8 @@ const (
 )
 
 const NobodyID = -1
-const electionTimeoutMin = 1000
-const electionTimeoutVar = 1000 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the election timeout
+const electionTimeoutMin = 500
+const electionTimeoutVar = 500 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the election timeout
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
