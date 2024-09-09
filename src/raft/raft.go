@@ -398,14 +398,11 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		lastContact := rf.lastContact
 		electionTimeout := rf.electionTimeout
-		//lastHeartbeat := rf.lastHeartbeat
-		//currentTerm := rf.currentTerm
 		currentState := rf.State()
 		rf.mu.Unlock()
 
 		if currentState == Leader {
 			if time.Since(rf.lastHeartbeat) >= rf.heartbeat {
-
 				rf.lastHeartbeat = time.Now()
 				log.Printf("Server %d: Sending heartbeats to peers", rf.me)
 
@@ -415,11 +412,13 @@ func (rf *Raft) ticker() {
 						continue // don't send AppendEntries RPC to self
 					}
 					// send AppendEntries RPC to peer
+					rf.mu.Lock()
 					req := &AppendEntries{
 						Term:     rf.currentTerm,
 						LeaderId: rf.me,
 					}
 					reply := &AppendEntriesReply{}
+					rf.mu.Unlock()
 					wg.Add(1)
 					go func(idx int, request *AppendEntries, reply *AppendEntriesReply) {
 						defer wg.Done()
