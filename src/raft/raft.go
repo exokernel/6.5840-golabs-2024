@@ -113,8 +113,8 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (3A).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	term = rf.currentTerm
-	rf.mu.Unlock()
 	isleader = rf.State() == Leader
 	return term, isleader
 }
@@ -241,18 +241,32 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
 	// Your code here (3A, 3B).
 	log.Printf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
 
 	// Initialize reply
 	//log.Printf("Server %d: locking mutex", rf.me)
-	rf.mu.Lock()
+	//rf.mu.Lock()
 	reply.Success = false
+	if args.Term > rf.currentTerm {
+		//log.Printf("Server %d: locking mutex", rf.me)
+		//rf.mu.Lock()
+		rf.currentTerm = args.Term
+		rf.votedFor = NobodyID
+		rf.persist()
+		//rf.mu.Unlock()
+		if rf.State() != Follower {
+			log.Printf("Server %d: Becoming follower: received term %d > currentTerm %d", rf.me, args.Term, rf.currentTerm)
+			rf.setState(Follower)
+		}
+	}
 
 	// Reset the election timeout because we have received an AppendEntries RPC
 	rf.lastContact = time.Now()
-	rf.mu.Unlock()
+	//rf.mu.Unlock()
 
 	switch rf.State() {
 	case Follower:
@@ -267,27 +281,14 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	}
 
 	//log.Printf("Server %d: locking mutex", rf.me)
-	rf.mu.Lock()
+	//rf.mu.Lock()
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		log.Printf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 		rf.mu.Unlock()
 		return
 	}
-	currentterm := rf.currentTerm
-	rf.mu.Unlock()
-
-	if args.Term > currentterm {
-		//log.Printf("Server %d: locking mutex", rf.me)
-		rf.mu.Lock()
-		rf.currentTerm = args.Term
-		rf.votedFor = NobodyID
-		rf.persist()
-		rf.mu.Unlock()
-		if rf.State() != Follower {
-			rf.setState(Follower)
-		}
-	}
+	//rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
@@ -387,33 +388,15 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) setState(state state) {
-	//log.Printf("Server %d: locking mutex in setState", rf.me)
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.state = state
 }
 
 func (rf *Raft) State() state {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	return rf.state
 }
 
 func (rf *Raft) ticker() {
-	voteChan := make(chan *RequestVoteReply)
-	defer close(voteChan)
-
-	appendChan := make(chan *AppendEntriesReply)
-	defer close(appendChan)
-
 	votesGranted := 0
-
-	rf.votedFor = NobodyID
-	rf.lastContact = time.Now()
-	rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
-	log.Printf("Server %d: Election timeout set to %v", rf.me, rf.electionTimeout)
-
-	rf.heartbeat = 100 * time.Millisecond // 100 milliseconds which is 10 heartbeats per second
 
 	// make a waitgroup to wait for all goroutines to finish
 	wg := sync.WaitGroup{}
@@ -422,49 +405,16 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
-		// check if it has been too long since we last heard from the leader or since we last voted for a leader
-		// if so, start election by sending a RequestVote RPC to all other servers
 		//log.Printf("Server %d: locking mutex 1", rf.me)
 		rf.mu.Lock()
 		lastContact := rf.lastContact
 		electionTimeout := rf.electionTimeout
+		//lastHeartbeat := rf.lastHeartbeat
+		//currentTerm := rf.currentTerm
+		currentState := rf.State()
 		rf.mu.Unlock()
-		state := rf.State()
 
-		// read from channels
-		if state == Candidate {
-			select {
-			case voteReply := <-voteChan:
-				// handle reply
-				if voteReply.Term > rf.currentTerm {
-					// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
-					log.Printf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, voteReply.Term, rf.currentTerm)
-					rf.currentTerm = voteReply.Term
-					rf.votedFor = NobodyID
-					rf.persist()
-					rf.setState(Follower)
-				} else {
-					// if RPC response contains term T < currentTerm: ignore
-					// if RPC response contains term T = currentTerm: count vote
-					if voteReply.VoteGranted {
-						// count vote
-						votesGranted++
-
-						// if votes received from majority of servers: become leader
-						if votesGranted > len(rf.peers)/2 {
-							rf.setState(Leader)
-							log.Printf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, votesGranted, len(rf.peers))
-						}
-					}
-				}
-			default:
-				// log something and continue
-				log.Printf("Server %d: No votes received yet", rf.me)
-			}
-		}
-
-		if state == Leader {
+		if currentState == Leader {
 			if time.Since(rf.lastHeartbeat) >= rf.heartbeat {
 
 				rf.lastHeartbeat = time.Now()
@@ -482,46 +432,38 @@ func (rf *Raft) ticker() {
 					}
 					reply := &AppendEntriesReply{}
 					wg.Add(1)
-					go func(idx int, request *AppendEntries, reply *AppendEntriesReply, appendChan chan *AppendEntriesReply) {
+					go func(idx int, request *AppendEntries, reply *AppendEntriesReply) {
 						defer wg.Done()
-						gotreply := rf.sendAppendEntries(idx, request, reply)
-						if gotreply {
-							log.Printf("Server %d: AppendEntries RPC reply received from server %d", rf.me, idx)
-							appendChan <- reply
-						} else {
+						ok := rf.sendAppendEntries(idx, request, reply)
+						if !ok {
 							log.Printf("Server %d: AppendEntries RPC to server %d failed", rf.me, idx)
+							return
 						}
-					}(idx, req, reply, appendChan)
-				}
-			}
 
-			select {
-			case appendReply := <-appendChan:
-				// handle reply
-				if appendReply.Term > rf.currentTerm {
-					// become a follower
-					rf.votedFor = NobodyID
-					rf.persist()
-					rf.setState(Follower)
-					log.Printf("Server %d: Became follower", rf.me)
+						log.Printf("Server %d: AppendEntries RPC reply received from server %d", rf.me, idx)
+						rf.mu.Lock()
+						defer rf.mu.Unlock()
+						if reply.Term > rf.currentTerm {
+							// become a follower
+							rf.votedFor = NobodyID
+							rf.persist()
+							rf.setState(Follower)
+							log.Printf("Server %d: Became follower", rf.me)
+						}
+					}(idx, req, reply)
 				}
-			default:
-				// log something and continue
-				//log.Printf("Server %d: No AppendEntries replies received yet", rf.me)
 			}
 		}
 
-		if state == Follower {
-			// we don't need to do anything here because we are already listening for RequestVote RPCs
-			// just log something
-			//log.Printf("Server %d: Waiting for RequestVote RPCs or AppendEntries RPCs", rf.me)
-		}
-
-		if time.Since(lastContact) >= electionTimeout && (state == Follower || state == Candidate) {
-			rf.setState(Candidate)
-			rf.mu.Lock()
-			rf.votedFor = NobodyID
+		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
+		// check if it has been too long since we last heard from the leader or since we last voted for a leader
+		// if so, start election by sending a RequestVote RPC to all other serversz
+		if time.Since(lastContact) >= electionTimeout && (currentState == Follower || currentState == Candidate) {
 			votesGranted = 0
+
+			rf.mu.Lock()
+			rf.setState(Candidate)
+			rf.votedFor = NobodyID
 
 			log.Printf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
 
@@ -548,24 +490,49 @@ func (rf *Raft) ticker() {
 				if idx == rf.me {
 					continue // don't send RequestVote RPC to self
 				}
+
+				rf.mu.Lock()
 				// send RequestVote RPC to peer
 				req := &RequestVoteArgs{
 					Term:        rf.currentTerm,
 					CandidateId: rf.me,
 				}
 				reply := &RequestVoteReply{}
+				rf.mu.Unlock()
 
 				wg.Add(1)
-				go func(idx int, request *RequestVoteArgs, reply *RequestVoteReply, replyChan chan *RequestVoteReply) {
+				go func(idx int, request *RequestVoteArgs, reply *RequestVoteReply) {
 					defer wg.Done()
-					gotreply := rf.sendRequestVote(idx, request, reply)
-					if gotreply {
-						log.Printf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
-						voteChan <- reply
-					} else {
+					ok := rf.sendRequestVote(idx, request, reply)
+					if !ok {
 						log.Printf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
+						return
 					}
-				}(idx, req, reply, voteChan)
+					log.Printf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
+					rf.mu.Lock()
+					defer rf.mu.Unlock()
+					if reply.Term > rf.currentTerm {
+						// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
+						log.Printf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, reply.Term, rf.currentTerm)
+						rf.currentTerm = reply.Term
+						rf.votedFor = NobodyID
+						rf.persist()
+						rf.setState(Follower)
+					} else {
+						// if RPC response contains term T < currentTerm: ignore
+						// if RPC response contains term T = currentTerm: count vote
+						if reply.VoteGranted {
+							// count vote
+							votesGranted++
+
+							// if votes received from majority of servers: become leader
+							if votesGranted > len(rf.peers)/2 {
+								rf.setState(Leader)
+								log.Printf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, votesGranted, len(rf.peers))
+							}
+						}
+					}
+				}(idx, req, reply)
 			}
 		}
 
@@ -574,37 +541,8 @@ func (rf *Raft) ticker() {
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
-	wg.Wait()
+	wg.Wait() // wait for all goroutines to finish
 }
-
-//func (rf *Raft) electionTimeout() {
-//	// sleeps for the election timeout duration
-//	// when we wake up, we check if we have heard from the leader via AppendEntries RPC or if we have granted our vote
-//	// to a candidate, if not, we start an election
-//	for !rf.killed() {
-//		log.Printf("Server %d: electionTimeout duration started", rf.me)
-//		// sleep for the electionTimeout duration. Add some random jitter to prevent split votes
-//		// Because the tester limits you tens of heartbeats per second, you will have to use an election timeout larger
-//		// than the paper's 150 to 300 milliseconds, but not too large, because then you may fail to elect a leader
-//		// within five seconds.
-//		ms := 1500 + (rand.Int63() % 500) // between 1.5 and 2 seconds
-//		electionTimeout := time.Duration(ms) * time.Millisecond
-//		time.Sleep(electionTimeout)
-//
-//		// check if the election timeout has elapsed without receiving AppendEntries RPC from current leader or granting vote to candidate
-//		// if so, convert to candidate
-//		rf.mu.Lock()
-//		if !rf.receivedAppendEntries && rf.votedFor == nil {
-//			rf.electionShouldStart = true
-//			log.Printf("Server %d: Starting election", rf.me)
-//		}
-//		// regardless of if an election should be started, reset the receivedAppendEntries flag
-//		// so we can check it again in the next electionTimeout. We don't reset votedFor here because
-//		// we want to remember who we voted for in the last election until a new term starts.
-//		rf.receivedAppendEntries = false
-//		rf.mu.Unlock()
-//	}
-//}
 
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -623,15 +561,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (3A, 3B, 3C).
+	rf.setState(Follower)
+	log.Printf("Server %d: Started as follower", rf.me)
+
+	rf.votedFor = NobodyID
+	rf.lastContact = time.Now()
+	rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
+	log.Printf("Server %d: Election timeout set to %v", rf.me, rf.electionTimeout)
+	rf.heartbeat = 100 * time.Millisecond // 100 milliseconds which is 10 heartbeats per second
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
-	// start election timeout
-	//go rf.electionTimeout()
-
-	rf.setState(Follower)
-	log.Printf("Server %d: Started as follower", rf.me)
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
