@@ -19,7 +19,7 @@ package raft
 
 import (
 	//	"bytes"
-	"log"
+
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -204,7 +204,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	log.Printf("Server %d: RequestVote RPC received from server %d, votedFor: %d, term: %d", rf.me, args.CandidateId, rf.votedFor, rf.currentTerm)
+	DPrintf("Server %d: RequestVote RPC received from server %d, votedFor: %d, term: %d", rf.me, args.CandidateId, rf.votedFor, rf.currentTerm)
 
 	// Initialize reply
 	reply.Term = rf.currentTerm
@@ -215,7 +215,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		//DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
-		log.Printf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
+		DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
 
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
@@ -225,7 +225,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
-		log.Printf("Server %d: RequestVote RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+		DPrintf("Server %d: RequestVote RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
 		return
 	}
 
@@ -236,7 +236,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		rf.persist()
-		log.Printf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
+		DPrintf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
 		//}
 	}
 }
@@ -246,18 +246,18 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	defer rf.mu.Unlock()
 
 	// Your code here (3A, 3B).
-	log.Printf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
+	DPrintf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
 
 	// Initialize reply
 	reply.Term = rf.currentTerm
 	reply.Success = false
 	if args.Term > rf.currentTerm {
-		log.Printf("Server %d: AppendEntries RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
+		DPrintf("Server %d: AppendEntries RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
 		rf.persist()
 		if rf.State() != Follower {
-			log.Printf("Server %d: Becoming follower: received term %d > currentTerm %d", rf.me, args.Term, rf.currentTerm)
+			DPrintf("Server %d: Becoming follower: received term %d > currentTerm %d", rf.me, args.Term, rf.currentTerm)
 			rf.setState(Follower)
 		}
 	}
@@ -268,18 +268,18 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	switch rf.State() {
 	case Follower:
 		// already a follower, just log the message
-		log.Printf("Server %d: Recieved AppendEntries and already a follower", rf.me)
+		DPrintf("Server %d: Recieved AppendEntries and already a follower", rf.me)
 	case Candidate:
 		// switch to follower
 		rf.setState(Follower)
-		log.Printf("Server %d: Recieved AppendEntries and became follower", rf.me)
+		DPrintf("Server %d: Recieved AppendEntries and became follower", rf.me)
 	case Leader:
-		log.Printf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
+		DPrintf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
 	}
 
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
-		log.Printf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
+		DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 		return
 	}
 
@@ -398,7 +398,7 @@ func (rf *Raft) ticker() {
 		// Your code here (3A)
 		// Check if a leader election should be started.
 
-		//log.Printf("Server %d: locking mutex 1", rf.me)
+		//DPrintf("Server %d: locking mutex 1", rf.me)
 		rf.mu.Lock()
 		lastContact := rf.lastContact
 		electionTimeout := rf.electionTimeout
@@ -408,7 +408,7 @@ func (rf *Raft) ticker() {
 		if currentState == Leader {
 			if time.Since(rf.lastHeartbeat) >= rf.heartbeat {
 				rf.lastHeartbeat = time.Now()
-				log.Printf("Server %d: Sending heartbeats to peers", rf.me)
+				DPrintf("Server %d: Sending heartbeats to peers", rf.me)
 
 				// send heartbeats to all peers
 				for idx := range rf.peers {
@@ -428,11 +428,11 @@ func (rf *Raft) ticker() {
 						defer wg.Done()
 						ok := rf.sendAppendEntries(idx, request, reply)
 						if !ok {
-							log.Printf("Server %d: AppendEntries RPC to server %d failed", rf.me, idx)
+							DPrintf("Server %d: AppendEntries RPC to server %d failed", rf.me, idx)
 							return
 						}
 
-						log.Printf("Server %d: AppendEntries RPC reply received from server %d", rf.me, idx)
+						DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, idx)
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
 						if reply.Term > rf.currentTerm {
@@ -440,7 +440,7 @@ func (rf *Raft) ticker() {
 							rf.votedFor = NobodyID
 							rf.persist()
 							rf.setState(Follower)
-							log.Printf("Server %d: Became follower", rf.me)
+							DPrintf("Server %d: Became follower", rf.me)
 						}
 					}(idx, req, reply)
 				}
@@ -457,16 +457,16 @@ func (rf *Raft) ticker() {
 			rf.setState(Candidate)
 			rf.votedFor = NobodyID
 
-			log.Printf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
+			DPrintf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
 
 			// reset the election timeout to now + sometime + random jitter
 			rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
-			log.Printf("Server %d: Election timeout reset to %v", rf.me, rf.electionTimeout)
+			DPrintf("Server %d: Election timeout reset to %v", rf.me, rf.electionTimeout)
 
 			// On conversion to candidate, start election:
 
 			// • Increment currentTerm
-			log.Printf("Server %d: Incrementing currentTerm from %d to %d", rf.me, rf.currentTerm, rf.currentTerm+1)
+			DPrintf("Server %d: Incrementing currentTerm from %d to %d", rf.me, rf.currentTerm, rf.currentTerm+1)
 			rf.currentTerm++
 			// • Vote for self
 			votesGranted++
@@ -497,15 +497,15 @@ func (rf *Raft) ticker() {
 					defer wg.Done()
 					ok := rf.sendRequestVote(idx, request, reply)
 					if !ok {
-						log.Printf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
+						DPrintf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
 						return
 					}
-					log.Printf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
+					DPrintf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
 					if reply.Term > rf.currentTerm {
 						// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
-						log.Printf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, reply.Term, rf.currentTerm)
+						DPrintf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, reply.Term, rf.currentTerm)
 						rf.currentTerm = reply.Term
 						rf.votedFor = NobodyID
 						rf.persist()
@@ -520,7 +520,7 @@ func (rf *Raft) ticker() {
 							// if votes received from majority of servers: become leader
 							if votesGranted > len(rf.peers)/2 {
 								rf.setState(Leader)
-								log.Printf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, votesGranted, len(rf.peers))
+								DPrintf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, votesGranted, len(rf.peers))
 							}
 						}
 					}
@@ -554,12 +554,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.setState(Follower)
-	log.Printf("Server %d: Started as follower", rf.me)
+	DPrintf("Server %d: Started as follower", rf.me)
 
 	rf.votedFor = NobodyID
 	rf.lastContact = time.Now()
 	rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
-	log.Printf("Server %d: Election timeout set to %v", rf.me, rf.electionTimeout)
+	DPrintf("Server %d: Election timeout set to %v", rf.me, rf.electionTimeout)
 	rf.heartbeat = 100 * time.Millisecond // 100 milliseconds which is 10 heartbeats per second
 
 	// initialize from state persisted before a crash
