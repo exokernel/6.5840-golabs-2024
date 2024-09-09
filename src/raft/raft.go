@@ -203,6 +203,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	log.Printf("Server %d: RequestVote RPC received from server %d, votedFor: %d, term: %d", rf.me, args.CandidateId, rf.votedFor, rf.currentTerm)
 
 	// Initialize reply
@@ -212,19 +213,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Reset the election timeout because we have received a RequestVote RPC
 	rf.lastContact = time.Now()
 
-	// Reply false if term < currentTerm
-	if args.Term < rf.currentTerm {
-		log.Printf("Server %d: RequestVote RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
-		return
-	}
-
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
 		rf.persist()
-		rf.mu.Unlock()
 		rf.setState(Follower)
-		rf.mu.Lock()
+	}
+
+	// Reply false if term < currentTerm
+	if args.Term < rf.currentTerm {
+		log.Printf("Server %d: RequestVote RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+		return
 	}
 
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
@@ -237,7 +236,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		log.Printf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
 		//}
 	}
-	rf.mu.Unlock()
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
@@ -248,16 +246,11 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	log.Printf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
 
 	// Initialize reply
-	//log.Printf("Server %d: locking mutex", rf.me)
-	//rf.mu.Lock()
 	reply.Success = false
 	if args.Term > rf.currentTerm {
-		//log.Printf("Server %d: locking mutex", rf.me)
-		//rf.mu.Lock()
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
 		rf.persist()
-		//rf.mu.Unlock()
 		if rf.State() != Follower {
 			log.Printf("Server %d: Becoming follower: received term %d > currentTerm %d", rf.me, args.Term, rf.currentTerm)
 			rf.setState(Follower)
@@ -266,7 +259,6 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 
 	// Reset the election timeout because we have received an AppendEntries RPC
 	rf.lastContact = time.Now()
-	//rf.mu.Unlock()
 
 	switch rf.State() {
 	case Follower:
@@ -280,15 +272,12 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		log.Printf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
 	}
 
-	//log.Printf("Server %d: locking mutex", rf.me)
-	//rf.mu.Lock()
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		log.Printf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 		rf.mu.Unlock()
 		return
 	}
-	//rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
