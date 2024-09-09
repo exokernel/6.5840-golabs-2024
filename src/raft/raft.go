@@ -39,8 +39,8 @@ const (
 )
 
 const NobodyID = -1
-const electionTimeoutMin = 500
-const electionTimeoutVar = 500 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the election timeout
+const electionTimeoutMin = 800
+const electionTimeoutVar = 400 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the election timeout
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -214,6 +214,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.lastContact = time.Now()
 
 	if args.Term > rf.currentTerm {
+		//DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
+		log.Printf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
+
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
 		rf.persist()
@@ -246,8 +249,10 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	log.Printf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
 
 	// Initialize reply
+	reply.Term = rf.currentTerm
 	reply.Success = false
 	if args.Term > rf.currentTerm {
+		log.Printf("Server %d: AppendEntries RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
 		rf.currentTerm = args.Term
 		rf.votedFor = NobodyID
 		rf.persist()
@@ -275,7 +280,6 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	// Reply false if term < currentTerm
 	if args.Term < rf.currentTerm {
 		log.Printf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
-		rf.mu.Unlock()
 		return
 	}
 
