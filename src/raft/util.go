@@ -1,9 +1,12 @@
 package raft
 
-import "log"
+import (
+	"log"
+	"os"
+)
 
 // Debugging
-const Debug = false
+var Debug = os.Getenv("DIST_SYS_DEBUG") == "1"
 
 func DPrintf(format string, a ...interface{}) {
 	if Debug {

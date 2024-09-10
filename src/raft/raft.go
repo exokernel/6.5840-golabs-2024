@@ -470,6 +470,7 @@ func (rf *Raft) ticker() {
 			rf.currentTerm++
 			// • Vote for self
 			votesGranted++
+			rf.votedFor = rf.me
 			rf.persist()
 			rf.mu.Unlock()
 
