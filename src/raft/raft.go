@@ -450,7 +450,7 @@ func (rf *Raft) ticker() {
 		// if election timeout elapses without receiving AppendEntries RPC from current leader or granting vote to candidate: convert to candidate
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other serversz
-		if time.Since(lastContact) >= electionTimeout && (currentState == Follower || currentState == Candidate) {
+		if time.Since(lastContact) >= electionTimeout && (currentState != Leader) {
 			votesGranted = 0
 
 			rf.mu.Lock()
