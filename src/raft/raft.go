@@ -96,6 +96,7 @@ type Raft struct {
 	// Election state
 	lastContact     time.Time
 	electionTimeout time.Duration
+	votesGranted    int
 
 	// Heartbeat
 	lastHeartbeat time.Time
@@ -414,33 +415,11 @@ func (rf *Raft) ticker() {
 						continue // don't send AppendEntries RPC to self
 					}
 					// send AppendEntries RPC to peer
-					rf.mu.Lock()
-					request := &AppendEntries{
-						Term:     rf.currentTerm,
-						LeaderId: rf.me,
-					}
-					reply := &AppendEntriesReply{}
-					rf.mu.Unlock()
 					wg.Add(1)
 					peerIdx := idx
 					go func() {
 						defer wg.Done()
-						ok := rf.sendAppendEntries(peerIdx, request, reply)
-						if !ok {
-							DPrintf("Server %d: AppendEntries RPC to server %d failed", rf.me, peerIdx)
-							return
-						}
-
-						DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, peerIdx)
-						rf.mu.Lock()
-						defer rf.mu.Unlock()
-						if reply.Term > rf.currentTerm {
-							// become a follower
-							rf.votedFor = NobodyID
-							rf.persist()
-							rf.setState(Follower)
-							DPrintf("Server %d: Became follower", rf.me)
-						}
+						rf.appendEntriesAndHandleResponse(peerIdx)
 					}()
 				}
 			}
@@ -450,9 +429,8 @@ func (rf *Raft) ticker() {
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other serversz
 		if time.Since(lastContact) >= electionTimeout && (currentState != Leader) {
-			votesGranted := 0
-
 			rf.mu.Lock()
+			rf.votesGranted = 0
 			rf.setState(Candidate)
 			rf.votedFor = NobodyID
 
@@ -468,7 +446,7 @@ func (rf *Raft) ticker() {
 			DPrintf("Server %d: Incrementing currentTerm from %d to %d", rf.me, rf.currentTerm, rf.currentTerm+1)
 			rf.currentTerm++
 			// • Vote for self
-			votesGranted++
+			rf.votesGranted++
 			rf.votedFor = rf.me
 			rf.persist()
 			rf.mu.Unlock()
@@ -483,48 +461,11 @@ func (rf *Raft) ticker() {
 					continue // don't send RequestVote RPC to self
 				}
 
-				rf.mu.Lock()
-				// send RequestVote RPC to peer
-				request := &RequestVoteArgs{
-					Term:        rf.currentTerm,
-					CandidateId: rf.me,
-				}
-				reply := &RequestVoteReply{}
-				rf.mu.Unlock()
-
 				wg.Add(1)
 				peerIdx := idx
 				go func() {
 					defer wg.Done()
-					ok := rf.sendRequestVote(peerIdx, request, reply)
-					if !ok {
-						DPrintf("Server %d: RequestVote RPC to server %d failed", rf.me, peerIdx)
-						return
-					}
-					DPrintf("Server %d: RequestVote RPC reply received from server %d", rf.me, peerIdx)
-					rf.mu.Lock()
-					defer rf.mu.Unlock()
-					if reply.Term > rf.currentTerm {
-						// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
-						DPrintf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, reply.Term, rf.currentTerm)
-						rf.currentTerm = reply.Term
-						rf.votedFor = NobodyID
-						rf.persist()
-						rf.setState(Follower)
-					} else {
-						// if RPC response contains term T < currentTerm: ignore
-						// if RPC response contains term T = currentTerm: count vote
-						if reply.VoteGranted {
-							// count vote
-							votesGranted++
-
-							// if votes received from majority of servers: become leader
-							if votesGranted > len(rf.peers)/2 {
-								rf.setState(Leader)
-								DPrintf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, votesGranted, len(rf.peers))
-							}
-						}
-					}
+					rf.requestVoteAndHandleResponse(peerIdx)
 				}()
 			}
 		}
@@ -535,6 +476,70 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 	wg.Wait() // wait for all goroutines to finish
+}
+
+func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
+	// if RPC response contains term T > currentTerm: set currentTerm = T, convert to follower
+	// if RPC response contains term T <= currentTerm && vote is granted: increment vote count
+	// if votes received from majority of servers: become leader
+	rf.mu.Lock()
+	// send RequestVote RPC to peer
+	request := &RequestVoteArgs{
+		Term:        rf.currentTerm,
+		CandidateId: rf.me,
+	}
+	reply := &RequestVoteReply{}
+	rf.mu.Unlock()
+
+	ok := rf.sendRequestVote(peerIdx, request, reply)
+	if !ok {
+		DPrintf("Server %d: RequestVote RPC to server %d failed", rf.me, peerIdx)
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("Server %d: RequestVote RPC reply received from server %d", rf.me, peerIdx)
+	if reply.Term > rf.currentTerm {
+		DPrintf("Server %d: Received RequestVote RPC reply with term %d > currentTerm %d so updating currentTerm and becoming follower", rf.me, reply.Term, rf.currentTerm)
+		rf.currentTerm = reply.Term
+		rf.votedFor = NobodyID
+		rf.persist()
+		rf.setState(Follower)
+	} else if reply.VoteGranted {
+		rf.votesGranted++
+		if rf.votesGranted > len(rf.peers)/2 {
+			rf.setState(Leader)
+			DPrintf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, rf.votesGranted, len(rf.peers))
+		}
+	}
+}
+
+func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int) {
+	rf.mu.Lock()
+	request := &AppendEntries{
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+	}
+	reply := &AppendEntriesReply{}
+	rf.mu.Unlock()
+
+	ok := rf.sendAppendEntries(peerIdx, request, reply)
+	if !ok {
+		DPrintf("Server %d: AppendEntries RPC to server %d failed", rf.me, peerIdx)
+		return
+	}
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, peerIdx)
+	if reply.Term > rf.currentTerm {
+		// become follower
+		rf.votedFor = NobodyID
+		rf.persist()
+		rf.setState(Follower)
+		DPrintf("Server %d: Became follower", rf.me)
+	}
 }
 
 // the service or tester wants to create a Raft server. the ports
