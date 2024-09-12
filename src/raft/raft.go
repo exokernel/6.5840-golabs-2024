@@ -389,8 +389,6 @@ func (rf *Raft) State() state {
 }
 
 func (rf *Raft) ticker() {
-	votesGranted := 0
-
 	// make a waitgroup to wait for all goroutines to finish
 	wg := sync.WaitGroup{}
 
@@ -451,7 +449,7 @@ func (rf *Raft) ticker() {
 		// check if it has been too long since we last heard from the leader or since we last voted for a leader
 		// if so, start election by sending a RequestVote RPC to all other serversz
 		if time.Since(lastContact) >= electionTimeout && (currentState != Leader) {
-			votesGranted = 0
+			votesGranted := 0
 
 			rf.mu.Lock()
 			rf.setState(Candidate)
