@@ -415,22 +415,23 @@ func (rf *Raft) ticker() {
 					}
 					// send AppendEntries RPC to peer
 					rf.mu.Lock()
-					req := &AppendEntries{
+					request := &AppendEntries{
 						Term:     rf.currentTerm,
 						LeaderId: rf.me,
 					}
 					reply := &AppendEntriesReply{}
 					rf.mu.Unlock()
 					wg.Add(1)
-					go func(idx int, request *AppendEntries, reply *AppendEntriesReply) {
+					peerIdx := idx
+					go func() {
 						defer wg.Done()
-						ok := rf.sendAppendEntries(idx, request, reply)
+						ok := rf.sendAppendEntries(peerIdx, request, reply)
 						if !ok {
-							DPrintf("Server %d: AppendEntries RPC to server %d failed", rf.me, idx)
+							DPrintf("Server %d: AppendEntries RPC to server %d failed", rf.me, peerIdx)
 							return
 						}
 
-						DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, idx)
+						DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, peerIdx)
 						rf.mu.Lock()
 						defer rf.mu.Unlock()
 						if reply.Term > rf.currentTerm {
@@ -440,7 +441,7 @@ func (rf *Raft) ticker() {
 							rf.setState(Follower)
 							DPrintf("Server %d: Became follower", rf.me)
 						}
-					}(idx, req, reply)
+					}()
 				}
 			}
 		}
@@ -484,7 +485,7 @@ func (rf *Raft) ticker() {
 
 				rf.mu.Lock()
 				// send RequestVote RPC to peer
-				req := &RequestVoteArgs{
+				request := &RequestVoteArgs{
 					Term:        rf.currentTerm,
 					CandidateId: rf.me,
 				}
@@ -492,14 +493,15 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 
 				wg.Add(1)
-				go func(idx int, request *RequestVoteArgs, reply *RequestVoteReply) {
+				peerIdx := idx
+				go func() {
 					defer wg.Done()
-					ok := rf.sendRequestVote(idx, request, reply)
+					ok := rf.sendRequestVote(peerIdx, request, reply)
 					if !ok {
-						DPrintf("Server %d: RequestVote RPC to server %d failed", rf.me, idx)
+						DPrintf("Server %d: RequestVote RPC to server %d failed", rf.me, peerIdx)
 						return
 					}
-					DPrintf("Server %d: RequestVote RPC reply received from server %d", rf.me, idx)
+					DPrintf("Server %d: RequestVote RPC reply received from server %d", rf.me, peerIdx)
 					rf.mu.Lock()
 					defer rf.mu.Unlock()
 					if reply.Term > rf.currentTerm {
@@ -523,7 +525,7 @@ func (rf *Raft) ticker() {
 							}
 						}
 					}
-				}(idx, req, reply)
+				}()
 			}
 		}
 
