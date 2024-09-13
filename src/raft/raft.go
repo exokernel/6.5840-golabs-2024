@@ -212,7 +212,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 
 	// Reset the election timeout because we have received a RequestVote RPC
-	rf.lastContact = time.Now()
+	//rf.lastContact = time.Now()
 
 	if args.Term > rf.currentTerm {
 		//DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
@@ -232,6 +232,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
 	if rf.votedFor == NobodyID || rf.votedFor == args.CandidateId {
+		// Reset the election timeout because we have granted a vote
+		rf.lastContact = time.Now()
 		// Check if candidate's log is at least as up-to-date as receiver's log
 		//if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
 		reply.VoteGranted = true
