@@ -404,11 +404,15 @@ func (rf *Raft) ticker() {
 		lastContact := rf.lastContact
 		electionTimeout := rf.electionTimeout
 		currentState := rf.State()
+		lastHeartbeat := rf.lastHeartbeat
+		heartbeat := rf.heartbeat
 		rf.mu.Unlock()
 
 		if currentState == Leader {
-			if time.Since(rf.lastHeartbeat) >= rf.heartbeat {
+			if time.Since(lastHeartbeat) >= heartbeat {
+				rf.mu.Lock()
 				rf.lastHeartbeat = time.Now()
+				rf.mu.Unlock()
 				DPrintf("Server %d: Sending heartbeats to peers", rf.me)
 
 				// send heartbeats to all peers
