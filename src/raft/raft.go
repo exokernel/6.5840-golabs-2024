@@ -360,6 +360,22 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if rf.state != Leader {
+		return -1, rf.currentTerm, false
+	}
+
+	index = len(rf.log)
+	term = rf.currentTerm
+	rf.log = append(rf.log, &logEntry{command: command.([]byte), term: term})
+	rf.persist()
+
+	DPrintf("Server %d: Command %v appended to log at index %d", rf.me, command, index)
+
+	// Trigger replication to followers (implement this separately)
+	//go rf.startAgreement(index)
 
 	return index, term, isLeader
 }
