@@ -64,8 +64,8 @@ type ApplyMsg struct {
 }
 
 type logEntry struct {
-	command []byte // command for state machine
-	term    int    // term when entry was received by leader (first index is 1)
+	Command interface{} // command for state machine
+	Term    int         // term when entry was received by leader (first index is 1)
 }
 
 // A Go object implementing a single Raft peer.
@@ -186,9 +186,13 @@ type RequestVoteReply struct {
 }
 
 type AppendEntries struct {
-	Term         int // leader’s term
-	LeaderId     int // so follower can redirect clients
-	PrevLogIndex int // index of log entry immediately preceding new ones
+	Term         int         // leader’s term
+	LeaderId     int         // so follower can redirect clients
+	PrevLogIndex int         // index of log entry immediately preceding new ones
+	PrevLogTerm  int         // term of PrevLogIndex entry
+	Entries      []*logEntry // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	LeaderCommit int         // leader’s commitIndex
+
 }
 
 type AppendEntriesReply struct {
@@ -280,30 +284,81 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		DPrintf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
 	}
 
-	// Reply false if term < currentTerm
+	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
 		return
+	}
+
+	// if this is not a heartbeat, append the entries to the log
+	if len(args.Entries) > 0 {
+		// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
+		prevLogSliceIndex := args.PrevLogIndex - 1
+		if prevLogSliceIndex < 0 || prevLogSliceIndex >= len(rf.log) {
+			DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, args.PrevLogIndex, prevLogSliceIndex)
+			panic("Index out of bounds")
+		}
+		matchingPrevIndexLogEntry := rf.log[prevLogSliceIndex]
+		if matchingPrevIndexLogEntry.Term != args.PrevLogTerm {
+			DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Log doesn't contain an entry at prevLogIndex %d whose term matches prevLogTerm %d", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
+			return
+		}
+
+		// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
+		for i := prevLogSliceIndex + 1; i < len(rf.log); i++ {
+			// i - prevLogSliceIndex - 1 gives the correct index into args.Entries
+			if rf.log[i].Term != args.Entries[i-prevLogSliceIndex-1].Term {
+				rf.log = truncateLog(rf.log, i)
+				break
+			}
+		}
+
+		// 4. Append any new entries not already in the log
+		for i, entry := range args.Entries {
+			logIndex := args.PrevLogIndex + 1 + i
+			if logIndex-1 >= len(rf.log) {
+				rf.log = append(rf.log, entry)
+			}
+		}
+
+		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+		}
 	}
 
 	reply.Term = rf.currentTerm
 	reply.Success = true
 }
 
-// Helper functions to get the last log term and index
-func (rf *Raft) lastLogTerm() int {
-	if len(rf.log) == 0 {
-		return 0
+// Define the min function
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	return rf.log[len(rf.log)-1].term
+	return b
 }
 
-func (rf *Raft) lastLogIndex() int {
-	if len(rf.log) == 0 {
-		return -1
+func truncateLog(log []*logEntry, index int) []*logEntry {
+	if index < 0 || index > len(log) {
+		return log // Index out of bounds, return the original slice
 	}
-	return len(rf.log) - 1
+	return log[:index] // Keep entries up to the specified index (exclusive)
 }
+
+// Helper functions to get the last log term and index
+//func (rf *Raft) lastLogTerm() int {
+//	if len(rf.log) == 0 {
+//		return 0
+//	}
+//	sliceIndex := len(rf.log) - 1
+//	if sliceIndex < 0 || sliceIndex >= len(rf.log) {
+//		DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, len(rf.log), sliceIndex)
+//		return 0
+//	}
+//	LogEntry := rf.log[sliceIndex]
+//	return LogEntry.Term
+//}
 
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
@@ -367,17 +422,47 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, rf.currentTerm, false
 	}
 
-	index = len(rf.log)
+	index = len(rf.log) + 1 // first index should be one
 	term = rf.currentTerm
-	rf.log = append(rf.log, &logEntry{command: command.([]byte), term: term})
-	rf.persist()
 
 	DPrintf("Server %d: Command %v appended to log at index %d", rf.me, command, index)
 
-	// Trigger replication to followers (implement this separately)
-	//go rf.startAgreement(index)
+	// Append to the log and trigger replication to followers (implement this separately)
+	go rf.startAgreement(index, command)
 
 	return index, term, isLeader
+}
+
+// Append the log entry and send AppendEntries RPCs to all other servers to replicate the log.
+// When a majority of servers have appended the log entry, the leader can commit the log entry and apply it to the state machine.
+// The leader's next heartbeat will include the commitIndex, and the followers will apply the log entries up to the commitIndex to their state machines.
+func (rf *Raft) startAgreement(index int, command interface{}) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	sliceIndex := index - 1
+	if sliceIndex < 0 || sliceIndex >= len(rf.log) {
+		DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, index, sliceIndex)
+		return
+	}
+
+	// Append the log entry
+	rf.log = append(rf.log, &logEntry{
+		Command: command,
+		Term:    rf.currentTerm,
+	})
+
+	// Send AppendEntries RPCs to all other servers to replicate the log
+	for idx := range rf.peers {
+		if idx == rf.me {
+			continue // don't send AppendEntries RPC to self
+		}
+
+		peerIdx := idx
+		go func() {
+			rf.appendEntriesAndHandleResponse(peerIdx)
+		}()
+	}
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
