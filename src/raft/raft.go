@@ -446,11 +446,20 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 		return
 	}
 
-	// Append the log entry
-	rf.log = append(rf.log, &logEntry{
+	logent := &logEntry{
 		Command: command,
 		Term:    rf.currentTerm,
-	})
+	}
+
+	// Append the log entry
+	rf.log = append(rf.log, logent)
+
+	// Create an AppendEntries RPC struct with the log entry
+	entries := &AppendEntries{
+		Term:     rf.currentTerm,
+		LeaderId: rf.me,
+		Entries:  []*logEntry{logent},
+	}
 
 	// Send AppendEntries RPCs to all other servers to replicate the log
 	for idx := range rf.peers {
@@ -460,7 +469,7 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 
 		peerIdx := idx
 		go func() {
-			rf.appendEntriesAndHandleResponse(peerIdx)
+			rf.appendEntriesAndHandleResponse(peerIdx, entries)
 		}()
 	}
 }
@@ -516,6 +525,11 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 				DPrintf("Server %d: Sending heartbeats to peers", rf.me)
 
+				heartbeatEnt := &AppendEntries{
+					Term:     rf.currentTerm,
+					LeaderId: rf.me,
+				}
+
 				// send heartbeats to all peers
 				for idx := range rf.peers {
 					if idx == rf.me {
@@ -526,7 +540,7 @@ func (rf *Raft) ticker() {
 					peerIdx := idx
 					go func() {
 						defer wg.Done()
-						rf.appendEntriesAndHandleResponse(peerIdx)
+						rf.appendEntriesAndHandleResponse(peerIdx, heartbeatEnt)
 					}()
 				}
 			}
@@ -622,12 +636,9 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 	}
 }
 
-func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int) {
+func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntries) {
 	rf.mu.Lock()
-	request := &AppendEntries{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-	}
+	request := entries
 	reply := &AppendEntriesReply{}
 	rf.mu.Unlock()
 
