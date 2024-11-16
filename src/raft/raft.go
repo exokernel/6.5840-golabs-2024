@@ -90,8 +90,12 @@ type Raft struct {
 	lastApplied int // index of highest log entry applied to state machine (initialized to 0, increases monotonically)
 
 	// Volatile State on Leaders
-	nextIndex  []int // for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
-	matchIndex []int // for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+
+	// for each server, index of the next log entry to send to that server (initialized to leader last log index + 1)
+	nextIndex []int
+
+	// for each server, index of highest log entry known to be replicated on server (initialized to 0, increases monotonically)
+	matchIndex []int
 
 	// Election state
 	lastContact     time.Time
@@ -454,13 +458,6 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 	// Append the log entry
 	rf.log = append(rf.log, logent)
 
-	// Create an AppendEntries RPC struct with the log entry
-	entries := &AppendEntries{
-		Term:     rf.currentTerm,
-		LeaderId: rf.me,
-		Entries:  []*logEntry{logent},
-	}
-
 	// Send AppendEntries RPCs to all other servers to replicate the log
 	for idx := range rf.peers {
 		if idx == rf.me {
@@ -468,9 +465,22 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 		}
 
 		peerIdx := idx
-		go func() {
-			rf.appendEntriesAndHandleResponse(peerIdx, entries)
-		}()
+		if len(rf.log) >= rf.nextIndex[peerIdx] {
+
+			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+			entries := &AppendEntries{
+				Term:         rf.currentTerm,
+				LeaderId:     rf.me,
+				PrevLogIndex: rf.nextIndex[peerIdx] - 1,
+				PrevLogTerm:  rf.log[rf.nextIndex[peerIdx]-1].Term,
+				Entries:      rf.log[rf.nextIndex[peerIdx]:],
+				LeaderCommit: rf.commitIndex,
+			}
+
+			go func() {
+				rf.appendEntriesAndHandleResponse(peerIdx, entries)
+			}()
+		}
 	}
 }
 
@@ -632,6 +642,18 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 		if rf.votesGranted > len(rf.peers)/2 {
 			rf.setState(Leader)
 			DPrintf("Server %d: Became leader, votesGranted: %d, totalPeers: %d", rf.me, rf.votesGranted, len(rf.peers))
+
+			// Initialize leader state
+
+			// Initialize nextIndex for each server, initialized to leader last log index + 1
+			nextIndex := len(rf.log) + 1
+			rf.nextIndex = make([]int, len(rf.peers))
+			for idx := range rf.peers {
+				rf.nextIndex[idx] = nextIndex
+			}
+
+			// Initialize matchIndex for each server, initialized to 0, increases monotonically
+			rf.matchIndex = make([]int, len(rf.peers))
 		}
 	}
 }
@@ -658,6 +680,72 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 		rf.setState(Follower)
 		DPrintf("Server %d: Became follower", rf.me)
 	}
+
+	// TODO: handle AppendEntries RPC reply
+	// If we got enough successful responses we can update the commitIndex, and other things specified in the paper.
+	// Do we need to handle heartbeats differently? We know this was a heartbeat if len(entries.Entries) == 0
+	// Would it be better to have a separate function for heartbeats to make the code more readable? Probably yes.
+
+	// If this is a heartbeat response, do nothing
+	if len(entries.Entries) == 0 {
+		return
+	}
+
+	// If successful: update nextIndex and matchIndex for follower (§5.3)
+	if reply.Success {
+		// update nextIndex and matchIndex
+		rf.nextIndex[peerIdx] = len(rf.log) + 1
+		rf.matchIndex[peerIdx] = len(rf.log)
+	} else {
+		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+		// TODO: how does the retry happen? Do we need to kick off another goroutine to keep retrying or do we just
+		// keep trying as we get more commands from clients?
+
+		// If followers crash or run slowly, or if network packets are lost, the leader retries Append-
+		// Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store
+		// all log entries.
+		rf.nextIndex[peerIdx]--
+	}
+
+	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3)
+	// TODO: verify this is correct
+	for N := len(rf.log) - 1; N > rf.commitIndex; N-- {
+		if rf.log[N].Term == rf.currentTerm {
+			matched := 1
+			for idx := range rf.peers {
+				if idx == rf.me {
+					continue
+				}
+				if rf.matchIndex[idx] >= N {
+					matched++
+				}
+			}
+			if matched > len(rf.peers)/2 {
+				rf.commitIndex = N
+				DPrintf("Server %d: CommitIndex set to %d", rf.me, rf.commitIndex)
+
+				// TODO:
+				// When the entry has been safely replicated, the leader applies the entry to its
+				// state machine and returns the result.
+				// I think this means we write the applied entry to the applyCh channel
+
+				// Apply the log entries up to the commitIndex to the state machine TODO: is this correct?
+				//for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+				//	applyMsg := ApplyMsg{
+				//		CommandValid: true,
+				//		Command:      rf.log[i].Command,
+				//		CommandIndex: i,
+				//	}
+				//	DPrintf("Server %d: Applying log entry %v at index %d", rf.me, rf.log[i].Command, i)
+				//	rf.lastApplied = i
+				//	go func() {
+				//		rf.applyCh <- applyMsg
+				//	}()
+				//}
+				break
+			}
+		}
+	}
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -669,8 +757,7 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
