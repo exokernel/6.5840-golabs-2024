@@ -546,6 +546,9 @@ func (rf *Raft) ticker() {
 						continue // don't send AppendEntries RPC to self
 					}
 					// send AppendEntries RPC to peer
+					// TODO: we need to retry append entries to followers that are behind in the heartbeats as well.
+					// this means checking the nextIndex and matchIndex for each follower and sending the log entries
+					// that the follower is missing in the heartbeat.
 					wg.Add(1)
 					peerIdx := idx
 					go func() {
@@ -700,6 +703,10 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 		// TODO: how does the retry happen? Do we need to kick off another goroutine to keep retrying or do we just
 		// keep trying as we get more commands from clients?
+
+		// Okay, according to GPT we handle the retries for a follower in subsequent append entries be they heartbeats or
+		// due to client commands. This means we have to adjust the code for heartbeats to handle log entries for the
+		// specific followers that are behind.
 
 		// If followers crash or run slowly, or if network packets are lost, the leader retries Append-
 		// Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store
