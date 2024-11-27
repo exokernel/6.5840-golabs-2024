@@ -325,11 +325,14 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 				rf.log = append(rf.log, entry)
 			}
 		}
+	}
 
-		// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
-		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = min(args.LeaderCommit, len(rf.log))
-		}
+	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
+	// The min() ensures that the follower's commitIndex is updated safely, preventing it committing entries that it
+	// hasn't received yet. The leader's commitIndex could be beyond the follower's last log index. In that case, we
+	// adjust the commitIndex to the follower's last log index.
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
 	}
 
 	reply.Term = rf.currentTerm
@@ -536,11 +539,6 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 				DPrintf("Server %d: Sending heartbeats to peers", rf.me)
 
-				//heartbeatEnt := &AppendEntries{
-				//	Term:     rf.currentTerm,
-				//	LeaderId: rf.me,
-				//}
-
 				// send heartbeats to all peers
 				for idx := range rf.peers {
 					if idx == rf.me {
@@ -548,8 +546,9 @@ func (rf *Raft) ticker() {
 					}
 					// send AppendEntries RPC to peer
 					heartbeatEnt := &AppendEntries{
-						Term:     rf.currentTerm,
-						LeaderId: rf.me,
+						Term:         rf.currentTerm,
+						LeaderId:     rf.me,
+						LeaderCommit: rf.commitIndex,
 					}
 
 					if len(rf.log) >= rf.nextIndex[idx] {
@@ -558,7 +557,6 @@ func (rf *Raft) ticker() {
 						heartbeatEnt.PrevLogIndex = rf.nextIndex[idx] - 1
 						heartbeatEnt.PrevLogTerm = rf.log[rf.nextIndex[idx]-1].Term
 						heartbeatEnt.Entries = rf.log[rf.nextIndex[idx]:]
-						heartbeatEnt.LeaderCommit = rf.commitIndex
 					}
 
 					wg.Add(1)
