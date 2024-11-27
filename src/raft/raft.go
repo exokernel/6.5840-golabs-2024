@@ -536,10 +536,10 @@ func (rf *Raft) ticker() {
 				rf.mu.Unlock()
 				DPrintf("Server %d: Sending heartbeats to peers", rf.me)
 
-				heartbeatEnt := &AppendEntries{
-					Term:     rf.currentTerm,
-					LeaderId: rf.me,
-				}
+				//heartbeatEnt := &AppendEntries{
+				//	Term:     rf.currentTerm,
+				//	LeaderId: rf.me,
+				//}
 
 				// send heartbeats to all peers
 				for idx := range rf.peers {
@@ -547,9 +547,20 @@ func (rf *Raft) ticker() {
 						continue // don't send AppendEntries RPC to self
 					}
 					// send AppendEntries RPC to peer
-					// TODO: we need to retry append entries to followers that are behind in the heartbeats as well.
-					// this means checking the nextIndex and matchIndex for each follower and sending the log entries
-					// that the follower is missing in the heartbeat.
+					heartbeatEnt := &AppendEntries{
+						Term:     rf.currentTerm,
+						LeaderId: rf.me,
+					}
+
+					if len(rf.log) >= rf.nextIndex[idx] {
+						// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+						// If this happens in the heartbeat, it means the follower is behind and this is a retry
+						heartbeatEnt.PrevLogIndex = rf.nextIndex[idx] - 1
+						heartbeatEnt.PrevLogTerm = rf.log[rf.nextIndex[idx]-1].Term
+						heartbeatEnt.Entries = rf.log[rf.nextIndex[idx]:]
+						heartbeatEnt.LeaderCommit = rf.commitIndex
+					}
+
 					wg.Add(1)
 					peerIdx := idx
 					go func() {
