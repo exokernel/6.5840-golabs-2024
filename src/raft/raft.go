@@ -291,10 +291,11 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	// 1. Reply false if term < currentTerm (§5.1)
 	if args.Term < rf.currentTerm {
 		DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.LeaderId, args.Term, rf.currentTerm)
-		return
+		return // Failed AppendEntries
 	}
 
-	// if this is not a heartbeat, append the entries to the log
+	// Note: Even heartbeats can contain log entries bc they are used to retry failed appends (e.g. follower logs is
+	// inconsistent with leader). The leader will have decremented nextIndex for the follower that failed to append.
 	if len(args.Entries) > 0 {
 		// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
 		prevLogSliceIndex := args.PrevLogIndex - 1
@@ -305,7 +306,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		matchingPrevIndexLogEntry := rf.log[prevLogSliceIndex]
 		if matchingPrevIndexLogEntry.Term != args.PrevLogTerm {
 			DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Log doesn't contain an entry at prevLogIndex %d whose term matches prevLogTerm %d", rf.me, args.LeaderId, args.PrevLogIndex, args.PrevLogTerm)
-			return
+			return // Failed AppendEntries
 		}
 
 		// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
@@ -332,7 +333,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	}
 
 	reply.Term = rf.currentTerm
-	reply.Success = true
+	reply.Success = true // Successful AppendEntries
 }
 
 // Define the min function
