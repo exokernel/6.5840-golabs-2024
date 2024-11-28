@@ -708,7 +708,7 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 	if reply.Success {
 		// update nextIndex and matchIndex
 		rf.nextIndex[peerIdx] = len(rf.log) + 1
-		rf.matchIndex[peerIdx] = len(rf.log)
+		rf.matchIndex[peerIdx] = len(rf.log) + 1
 	} else {
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 		// TODO: how does the retry happen? Do we need to kick off another goroutine to keep retrying or do we just
