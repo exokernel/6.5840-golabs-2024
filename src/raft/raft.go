@@ -706,9 +706,13 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 
 	// If successful: update nextIndex and matchIndex for follower (§5.3)
 	if reply.Success {
-		// update nextIndex and matchIndex
-		rf.nextIndex[peerIdx] = len(rf.log) + 1
-		rf.matchIndex[peerIdx] = len(rf.log) + 1
+		// update nextIndex and matchIndex based on the entries sent
+		// Note: raft log indexes start at 1
+		// prevLogIndex is the index of the log entry immediately preceding the new ones
+		// nextIndex is the index of the next log entry to send to that server
+		rf.nextIndex[peerIdx] = entries.PrevLogIndex + len(entries.Entries) + 1
+		// matchIndex is the index of the highest log entry known to be replicated on server
+		rf.matchIndex[peerIdx] = entries.PrevLogIndex + len(entries.Entries)
 	} else {
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 		// TODO: how does the retry happen? Do we need to kick off another goroutine to keep retrying or do we just
