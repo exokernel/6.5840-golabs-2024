@@ -343,6 +343,8 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	reply.Success = true // Successful AppendEntries
 }
 
+// Apply the log entries up to the commitIndex to the state machine
+// Only call this function when the lock is held
 func (rf *Raft) applyCommittedEntries() {
 	for rf.lastApplied < rf.commitIndex {
 		rf.lastApplied++
