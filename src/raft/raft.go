@@ -765,24 +765,22 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 				rf.commitIndex = N
 				DPrintf("Server %d: CommitIndex set to %d", rf.me, rf.commitIndex)
 
-				// TODO:
 				// When the entry has been safely replicated, the leader applies the entry to its
 				// state machine and returns the result.
-				// I think this means we write the applied entry to the applyCh channel
 
-				// Apply the log entries up to the commitIndex to the state machine TODO: is this correct?
-				//for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-				//	applyMsg := ApplyMsg{
-				//		CommandValid: true,
-				//		Command:      rf.log[i].Command,
-				//		CommandIndex: i,
-				//	}
-				//	DPrintf("Server %d: Applying log entry %v at index %d", rf.me, rf.log[i].Command, i)
-				//	rf.lastApplied = i
-				//	go func() {
-				//		rf.applyCh <- applyMsg
-				//	}()
-				//}
+				// Apply the log entries up to the commitIndex to the state machine.
+				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
+					applyMsg := ApplyMsg{
+						CommandValid: true,
+						Command:      rf.log[i].Command,
+						CommandIndex: i,
+					}
+					DPrintf("Server %d: Applying log entry %v at index %d", rf.me, rf.log[i].Command, i)
+					rf.lastApplied = i
+					go func() {
+						rf.applyCh <- applyMsg
+					}()
+				}
 				break
 			}
 		}
