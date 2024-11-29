@@ -746,8 +746,10 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 		rf.nextIndex[peerIdx]--
 	}
 
-	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N (§5.3)
-	// TODO: verify this is correct
+	// Here we want to check if we can commit any log entries. We can only commit log entries that have been replicated
+	// to a majority of servers, including this server (the leader).
+	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+	// set commitIndex = N (§5.3)
 	for N := len(rf.log) - 1; N > rf.commitIndex; N-- {
 		if rf.log[N].Term == rf.currentTerm {
 			matched := 1
