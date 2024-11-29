@@ -108,6 +108,9 @@ type Raft struct {
 
 	// State
 	state state
+
+	// Channels
+	applyCh chan ApplyMsg
 }
 
 // return currentTerm and whether this server
@@ -333,10 +336,24 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	// adjust the commitIndex to the follower's last log index.
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+		rf.applyCommittedEntries()
 	}
 
 	reply.Term = rf.currentTerm
 	reply.Success = true // Successful AppendEntries
+}
+
+func (rf *Raft) applyCommittedEntries() {
+	for rf.lastApplied < rf.commitIndex {
+		rf.lastApplied++
+		entry := rf.log[rf.lastApplied-1] // log index starts at 1
+		// Apply the log entry to the state machine
+		rf.applyCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      entry.Command,
+			CommandIndex: rf.lastApplied,
+		}
+	}
 }
 
 // Define the min function
@@ -470,7 +487,6 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 
 		peerIdx := idx
 		if len(rf.log) >= rf.nextIndex[peerIdx] {
-
 			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 			entries := &AppendEntries{
 				Term:         rf.currentTerm,
@@ -783,6 +799,7 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
 	// Your initialization code here (3A, 3B, 3C).
 	rf.setState(Follower)
