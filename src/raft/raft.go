@@ -658,8 +658,13 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 	rf.mu.Lock()
 	// send RequestVote RPC to peer
 	request := &RequestVoteArgs{
-		Term:        rf.currentTerm,
-		CandidateId: rf.me,
+		Term:         rf.currentTerm,
+		CandidateId:  rf.me,
+		LastLogIndex: len(rf.log),
+		LastLogTerm:  0,
+	}
+	if len(rf.log) > 0 {
+		request.LastLogTerm = rf.log[len(rf.log)-1].Term
 	}
 	reply := &RequestVoteReply{}
 	rf.mu.Unlock()
