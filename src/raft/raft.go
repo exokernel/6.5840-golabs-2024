@@ -521,7 +521,6 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 			continue // don't send AppendEntries RPC to self
 		}
 
-		peerIdx := idx
 		entries := &AppendEntries{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
@@ -530,19 +529,19 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 
 		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 		// If is at least one log entry to send at this point because we just appended a log entry
-		if rf.nextIndex[peerIdx] <= len(rf.log) {
-			entries.PrevLogIndex = rf.nextIndex[peerIdx] - 1
+		if rf.nextIndex[idx] <= len(rf.log) {
+			entries.PrevLogIndex = rf.nextIndex[idx] - 1
 			if entries.PrevLogIndex > 0 {
 				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
 			}
-			entries.Entries = rf.log[rf.nextIndex[peerIdx]-1:]
+			entries.Entries = rf.log[rf.nextIndex[idx]-1:]
 		}
 
-		DPrintf("Server %d: Sending AppendEntries w/ COMMAND to server %d, entries: %v", rf.me, peerIdx, entries.Entries)
+		DPrintf("Server %d: Sending AppendEntries w/ COMMAND to server %d, entries: %v", rf.me, idx, entries.Entries)
 
-		go func() {
-			rf.appendEntriesAndHandleResponse(peerIdx, entries)
-		}()
+		go func(i int, ae *AppendEntries) {
+			rf.appendEntriesAndHandleResponse(i, ae)
+		}(idx, entries)
 	}
 }
 
