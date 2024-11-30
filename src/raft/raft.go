@@ -777,9 +777,7 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 					}
 					DPrintf("Server %d: Applying log entry %v at index %d", rf.me, rf.log[i].Command, i)
 					rf.lastApplied = i
-					go func() {
-						rf.applyCh <- applyMsg
-					}()
+					rf.applyCh <- applyMsg
 				}
 				break
 			}
