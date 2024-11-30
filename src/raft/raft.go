@@ -243,15 +243,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
 	if rf.votedFor == NobodyID || rf.votedFor == args.CandidateId {
-		// Reset the election timeout because we have granted a vote
-		rf.lastContact = time.Now()
+
 		// Check if candidate's log is at least as up-to-date as receiver's log
-		// if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
-		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
-		rf.persist()
-		DPrintf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
-		//}
+		lastLogIndex := len(rf.log)
+		var lastLogTerm int
+		if lastLogIndex > 0 {
+			lastLogTerm = rf.log[lastLogIndex-1].Term
+		}
+
+		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
+			// Reset the election timeout because we have granted a vote
+			rf.lastContact = time.Now()
+			// Check if candidate's log is at least as up-to-date as receiver's log
+			// if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
+			reply.VoteGranted = true
+			rf.votedFor = args.CandidateId
+			rf.persist()
+			DPrintf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
+		} else {
+			DPrintf("Server %d: RequestVote RPC reply sent to server %d. Candidate's log is not up-to-date", rf.me, args.CandidateId)
+		}
 	}
 }
 
