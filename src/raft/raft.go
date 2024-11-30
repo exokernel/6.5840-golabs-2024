@@ -493,6 +493,7 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 
 	// Append the log entry
 	rf.log = append(rf.log, logent)
+	rf.persist()
 
 	// Send AppendEntries RPCs to all other servers to replicate the log
 	for idx := range rf.peers {
