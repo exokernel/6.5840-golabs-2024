@@ -315,7 +315,8 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		prevLogSliceIndex := args.PrevLogIndex - 1
 		if prevLogSliceIndex < 0 || prevLogSliceIndex >= len(rf.log) {
 			DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, args.PrevLogIndex, prevLogSliceIndex)
-			panic("Index out of bounds")
+			//panic("Index out of bounds")
+			return // Failed AppendEntries
 		}
 		matchingPrevIndexLogEntry := rf.log[prevLogSliceIndex]
 		if matchingPrevIndexLogEntry.Term != args.PrevLogTerm {
@@ -339,6 +340,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 				rf.log = append(rf.log, entry)
 			}
 		}
+		rf.persist()
 	}
 
 	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
