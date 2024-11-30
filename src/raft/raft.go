@@ -246,7 +246,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		// Reset the election timeout because we have granted a vote
 		rf.lastContact = time.Now()
 		// Check if candidate's log is at least as up-to-date as receiver's log
-		//if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
+		// if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		rf.persist()
@@ -468,7 +468,7 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 	defer rf.mu.Unlock()
 
 	sliceIndex := index - 1
-	if sliceIndex < 0 || sliceIndex >= len(rf.log) {
+	if sliceIndex < 0 || sliceIndex != len(rf.log) {
 		DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, index, sliceIndex)
 		return
 	}
@@ -707,6 +707,7 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 	if reply.Term > rf.currentTerm {
 		// become follower
 		rf.votedFor = NobodyID
+		rf.currentTerm = reply.Term // update currentTerm
 		rf.persist()
 		rf.setState(Follower)
 		DPrintf("Server %d: Became follower", rf.me)
