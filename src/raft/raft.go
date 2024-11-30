@@ -293,7 +293,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	switch rf.State() {
 	case Follower:
 		// already a follower, just log the message
-		DPrintf("Server %d: Recieved AppendEntries and already a follower", rf.me)
+		DPrintf("Server %d: Recieved AppendEntries and already a follower. Number of log entries: %d", rf.me, len(args.Entries))
 	case Candidate:
 		// switch to follower
 		rf.setState(Follower)
@@ -311,8 +311,24 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	// Note: Even heartbeats can contain log entries bc they are used to retry failed appends (e.g. follower logs is
 	// inconsistent with leader). The leader will have decremented nextIndex for the follower that failed to append.
 	if len(args.Entries) > 0 {
+		DPrintf("Server %d: AppendEntries RPC received from server %d with log entries: %v", rf.me, args.LeaderId, args.Entries)
 		// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
 		prevLogSliceIndex := args.PrevLogIndex - 1
+
+		if args.PrevLogIndex == 0 {
+			// This is the first entry in the log, no need to check previous AppendEntries
+			// Just append the entries to the log
+			rf.log = append(rf.log, args.Entries...)
+			rf.persist()
+			reply.Success = true
+			DPrintf("Server %d: Appended first entries to log, length now %d: leaderCommit: %d, commitIndex: %d", rf.me, len(rf.log), args.LeaderCommit, rf.commitIndex)
+			if args.LeaderCommit > rf.commitIndex {
+				rf.commitIndex = min(args.LeaderCommit, len(rf.log))
+				rf.applyCommittedEntries()
+			}
+			return
+		}
+
 		if prevLogSliceIndex < 0 || prevLogSliceIndex >= len(rf.log) {
 			DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, args.PrevLogIndex, prevLogSliceIndex)
 			//panic("Index out of bounds")
@@ -368,6 +384,7 @@ func (rf *Raft) applyCommittedEntries() {
 			Command:      entry.Command,
 			CommandIndex: rf.lastApplied,
 		}
+		DPrintf("Server %d: Applied log entry %v at index %d to state machine", rf.me, entry.Command, rf.lastApplied)
 	}
 }
 
@@ -494,6 +511,9 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 	// Append the log entry
 	rf.log = append(rf.log, logent)
 	rf.persist()
+	rf.matchIndex[rf.me] = len(rf.log) // update matchIndex for leader
+
+	DPrintf("Server %d: Log entry %v appended to log at index %d. Length of log: %d", rf.me, command, index, len(rf.log))
 
 	// Send AppendEntries RPCs to all other servers to replicate the log
 	for idx := range rf.peers {
@@ -502,21 +522,27 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 		}
 
 		peerIdx := idx
-		if len(rf.log) >= rf.nextIndex[peerIdx] {
-			// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
-			entries := &AppendEntries{
-				Term:         rf.currentTerm,
-				LeaderId:     rf.me,
-				PrevLogIndex: rf.nextIndex[peerIdx] - 1,
-				PrevLogTerm:  rf.log[rf.nextIndex[peerIdx]-1].Term,
-				Entries:      rf.log[rf.nextIndex[peerIdx]:],
-				LeaderCommit: rf.commitIndex,
-			}
-
-			go func() {
-				rf.appendEntriesAndHandleResponse(peerIdx, entries)
-			}()
+		entries := &AppendEntries{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			LeaderCommit: rf.commitIndex,
 		}
+
+		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+		// If is at least one log entry to send at this point because we just appended a log entry
+		if rf.nextIndex[peerIdx] <= len(rf.log) {
+			entries.PrevLogIndex = rf.nextIndex[peerIdx] - 1
+			if entries.PrevLogIndex > 0 {
+				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
+			}
+			entries.Entries = rf.log[rf.nextIndex[peerIdx]-1:]
+		}
+
+		DPrintf("Server %d: Sending AppendEntries w/ COMMAND to server %d, entries: %v", rf.me, peerIdx, entries.Entries)
+
+		go func() {
+			rf.appendEntriesAndHandleResponse(peerIdx, entries)
+		}()
 	}
 }
 
@@ -569,7 +595,7 @@ func (rf *Raft) ticker() {
 				rf.mu.Lock()
 				rf.lastHeartbeat = time.Now()
 				rf.mu.Unlock()
-				DPrintf("Server %d: Sending heartbeats to peers", rf.me)
+				DPrintf("Server %d: Sending heartbeats to peers, commitIndex: %d", rf.me, rf.commitIndex)
 
 				// send heartbeats to all peers
 				for idx := range rf.peers {
@@ -586,9 +612,11 @@ func (rf *Raft) ticker() {
 					if len(rf.log) >= rf.nextIndex[idx] {
 						// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 						// If this happens in the heartbeat, it means the follower is behind and this is a retry
-						heartbeatEnt.PrevLogIndex = rf.nextIndex[idx] - 1
-						heartbeatEnt.PrevLogTerm = rf.log[rf.nextIndex[idx]-1].Term
-						heartbeatEnt.Entries = rf.log[rf.nextIndex[idx]:]
+						if rf.nextIndex[idx] > 0 {
+							heartbeatEnt.PrevLogIndex = rf.nextIndex[idx] - 1
+							heartbeatEnt.PrevLogTerm = rf.log[rf.nextIndex[idx]-1].Term
+							heartbeatEnt.Entries = rf.log[rf.nextIndex[idx]:]
+						}
 					}
 
 					wg.Add(1)
@@ -701,9 +729,11 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 			for idx := range rf.peers {
 				rf.nextIndex[idx] = nextIndex
 			}
+			DPrintf("Server %d: Leader log length: %d, nextIndex: %v", rf.me, len(rf.log), rf.nextIndex)
 
 			// Initialize matchIndex for each server, initialized to 0, increases monotonically
 			rf.matchIndex = make([]int, len(rf.peers))
+			rf.matchIndex[rf.me] = len(rf.log)
 		}
 	}
 }
@@ -737,20 +767,17 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 	// Do we need to handle heartbeats differently? We know this was a heartbeat if len(entries.Entries) == 0
 	// Would it be better to have a separate function for heartbeats to make the code more readable? Probably yes.
 
-	// If this is a heartbeat response, do nothing
-	if len(entries.Entries) == 0 {
-		return
-	}
-
 	// If successful: update nextIndex and matchIndex for follower (§5.3)
 	if reply.Success {
 		// update nextIndex and matchIndex based on the entries sent
 		// Note: raft log indexes start at 1
 		// prevLogIndex is the index of the log entry immediately preceding the new ones
-		// nextIndex is the index of the next log entry to send to that server
-		rf.nextIndex[peerIdx] = entries.PrevLogIndex + len(entries.Entries) + 1
-		// matchIndex is the index of the highest log entry known to be replicated on server
-		rf.matchIndex[peerIdx] = entries.PrevLogIndex + len(entries.Entries)
+		if len(entries.Entries) > 0 {
+			// nextIndex is the index of the next log entry to send to that server
+			rf.nextIndex[peerIdx] = entries.PrevLogIndex + len(entries.Entries) + 1
+			// matchIndex is the index of the highest log entry known to be replicated on server
+			rf.matchIndex[peerIdx] = entries.PrevLogIndex + len(entries.Entries)
+		}
 	} else {
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
 		// TODO: how does the retry happen? Do we need to kick off another goroutine to keep retrying or do we just
@@ -764,43 +791,41 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 		// Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store
 		// all log entries.
 		rf.nextIndex[peerIdx]--
+		return
 	}
+
+	DPrintf("Server %d: AE RESPONSE HANDLE log length: %d, nextIndex: %v, matchIndex: %v, commitIndex: %d", rf.me, len(rf.log), rf.nextIndex, rf.matchIndex, rf.commitIndex)
 
 	// Here we want to check if we can commit any log entries. We can only commit log entries that have been replicated
 	// to a majority of servers, including this server (the leader).
 	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	// set commitIndex = N (§5.3)
-	for N := len(rf.log) - 1; N > rf.commitIndex; N-- {
-		if rf.log[N].Term == rf.currentTerm {
+	for N := len(rf.log); N >= 0 && N > rf.commitIndex; N-- {
+		DPrintf("Server %d: Checking commit for N=%d, commitIndex=%d, log length=%d", rf.me, N, rf.commitIndex, len(rf.log))
+		if rf.log[N-1].Term == rf.currentTerm {
+			DPrintf("Server %d: Entry at N=%d has matching term %d", rf.me, N, rf.currentTerm)
 			matched := 1
 			for idx := range rf.peers {
 				if idx == rf.me {
 					continue
 				}
+				DPrintf("Server %d: Checking peer %d: matchIndex=%d, N=%d", rf.me, idx, rf.matchIndex[idx], N)
 				if rf.matchIndex[idx] >= N {
 					matched++
 				}
 			}
+			DPrintf("Server %d: For N=%d: matched=%d, needed=%d", rf.me, N, matched, len(rf.peers)/2+1)
 			if matched > len(rf.peers)/2 {
 				rf.commitIndex = N
 				DPrintf("Server %d: CommitIndex set to %d", rf.me, rf.commitIndex)
 
 				// When the entry has been safely replicated, the leader applies the entry to its
 				// state machine and returns the result.
-
-				// Apply the log entries up to the commitIndex to the state machine.
-				for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-					applyMsg := ApplyMsg{
-						CommandValid: true,
-						Command:      rf.log[i].Command,
-						CommandIndex: i,
-					}
-					DPrintf("Server %d: Applying log entry %v at index %d", rf.me, rf.log[i].Command, i)
-					rf.lastApplied = i
-					rf.applyCh <- applyMsg
-				}
+				rf.applyCommittedEntries()
 				break
 			}
+		} else {
+			DPrintf("Server %d: Entry at N=%d has term %d != currentTerm %d", rf.me, N, rf.log[N-1].Term, rf.currentTerm)
 		}
 	}
 }
