@@ -20,6 +20,7 @@ package raft
 import (
 	//	"bytes"
 
+	"fmt"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -40,7 +41,10 @@ const (
 
 const NobodyID = -1
 const electionTimeoutMin = 800
-const electionTimeoutVar = 400 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the election timeout
+
+// election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the
+// election timeout
+const electionTimeoutVar = 400
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -271,7 +275,8 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 	defer rf.mu.Unlock()
 
 	// Your code here (3A, 3B).
-	DPrintf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d", rf.me, args.LeaderId, args.Term, rf.State())
+	DPrintf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d PREVLOGINDEX %d", rf.me, args.LeaderId, args.Term, rf.State(), args.PrevLogIndex)
+	rf.debugPrintLog()
 
 	// Initialize reply
 	reply.Term = rf.currentTerm
@@ -308,10 +313,18 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		return // Failed AppendEntries
 	}
 
-	// Note: Even heartbeats can contain log entries bc they are used to retry failed appends (e.g. follower logs is
-	// inconsistent with leader). The leader will have decremented nextIndex for the follower that failed to append.
+	// The leader will have decremented nextIndex for the follower that failed to append.
 	if len(args.Entries) > 0 {
-		DPrintf("Server %d: AppendEntries RPC received from server %d with log entries: %v", rf.me, args.LeaderId, args.Entries)
+		DPrintf("Server %d: AppendEntries RPC received from server %d", rf.me, args.LeaderId)
+		// Print the log entries the server sent
+		str := fmt.Sprintf("Server %d: Got APPENDEntries: [", rf.me)
+		i := args.PrevLogIndex + 1
+		for _, entry := range args.Entries {
+			str += fmt.Sprintf("%d:%v ", i, entry.Command)
+			i++
+		}
+		str += "]"
+		DPrintf(str)
 		// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
 		prevLogSliceIndex := args.PrevLogIndex - 1
 
@@ -331,6 +344,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 
 		if prevLogSliceIndex < 0 || prevLogSliceIndex >= len(rf.log) {
 			DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, args.PrevLogIndex, prevLogSliceIndex)
+			DPrintf("Server %d: my log has %d entries and my commitIndex is %d and my lastApplied is %d", rf.me, len(rf.log), rf.commitIndex, rf.lastApplied)
 			//panic("Index out of bounds")
 			return // Failed AppendEntries
 		}
@@ -344,6 +358,7 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		for i := prevLogSliceIndex + 1; i < len(rf.log); i++ {
 			// i - prevLogSliceIndex - 1 gives the correct index into args.Entries
 			if rf.log[i].Term != args.Entries[i-prevLogSliceIndex-1].Term {
+				DPrintf("Server %d: Conflicting log entry found at index %d. Truncating log at index %d", rf.me, i, i)
 				rf.log = truncateLog(rf.log, i)
 				break
 			}
@@ -353,9 +368,11 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 		for i, entry := range args.Entries {
 			logIndex := args.PrevLogIndex + 1 + i
 			if logIndex-1 >= len(rf.log) {
+				DPrintf("Server %d: Appending log entry %v at index %d prev log index %d", rf.me, entry.Command, logIndex, args.PrevLogIndex)
 				rf.log = append(rf.log, entry)
 			}
 		}
+		rf.debugPrintLog()
 		rf.persist()
 	}
 
@@ -370,6 +387,19 @@ func (rf *Raft) AppendEntries(args *AppendEntries, reply *AppendEntriesReply) {
 
 	reply.Term = rf.currentTerm
 	reply.Success = true // Successful AppendEntries
+}
+
+func (rf *Raft) debugPrintLog() {
+	if !Debug {
+		return
+	}
+	str := fmt.Sprintf("Server %d: Log entries: [", rf.me)
+	for i, entry := range rf.log {
+		str += fmt.Sprintf("%d:%v ", i+1, entry.Command)
+	}
+	str += "]"
+	str += fmt.Sprintf(" commitIndex: %d, lastApplied: %d", rf.commitIndex, rf.lastApplied)
+	DPrintf(str)
 }
 
 // Apply the log entries up to the commitIndex to the state machine
@@ -513,7 +543,7 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 	rf.persist()
 	rf.matchIndex[rf.me] = len(rf.log) // update matchIndex for leader
 
-	DPrintf("Server %d: Log entry %v appended to log at index %d. Length of log: %d", rf.me, command, index, len(rf.log))
+	DPrintf("POOP Server %d: Log entry %v appended to log at index %d. Length of log: %d", rf.me, command, index, len(rf.log))
 
 	// Send AppendEntries RPCs to all other servers to replicate the log
 	for idx := range rf.peers {
@@ -530,10 +560,12 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
 		// If is at least one log entry to send at this point because we just appended a log entry
 		if rf.nextIndex[idx] <= len(rf.log) {
+			DPrintf("Server %d: Setting PrevLogIndex in AE to %d for server %d", rf.me, rf.nextIndex[idx]-1, idx)
 			entries.PrevLogIndex = rf.nextIndex[idx] - 1
 			if entries.PrevLogIndex > 0 {
 				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
 			}
+			//entries.Entries = rf.log[rf.nextIndex[idx]-1:]
 			entries.Entries = rf.log[rf.nextIndex[idx]-1:]
 		}
 
@@ -608,15 +640,18 @@ func (rf *Raft) ticker() {
 						LeaderCommit: rf.commitIndex,
 					}
 
-					if len(rf.log) >= rf.nextIndex[idx] {
-						// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
-						// If this happens in the heartbeat, it means the follower is behind and this is a retry
-						if rf.nextIndex[idx] > 0 {
-							heartbeatEnt.PrevLogIndex = rf.nextIndex[idx] - 1
-							heartbeatEnt.PrevLogTerm = rf.log[rf.nextIndex[idx]-1].Term
-							heartbeatEnt.Entries = rf.log[rf.nextIndex[idx]:]
-						}
-					}
+					// XXX: This is wrong. Heartbeats should not have any log entries. The retries should be triggered
+					// immediately after a failed append entries. We should retry indefinitely until the follower
+					// catches up, maybe with some small delay or backoff.
+					//if len(rf.log) >= rf.nextIndex[idx] {
+					//	// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
+					//	// If this happens in the heartbeat, it means the follower is behind and this is a retry
+					//	if rf.nextIndex[idx] > 0 {
+					//		heartbeatEnt.PrevLogIndex = rf.nextIndex[idx] - 1
+					//		heartbeatEnt.PrevLogTerm = rf.log[rf.nextIndex[idx]-1].Term
+					//		heartbeatEnt.Entries = rf.log[rf.nextIndex[idx]:]
+					//	}
+					//}
 
 					wg.Add(1)
 					peerIdx := idx
@@ -741,6 +776,16 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 	rf.mu.Lock()
 	request := entries
 	reply := &AppendEntriesReply{}
+	rf.debugPrintLog()
+	str := fmt.Sprintf("Server %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
+	i := rf.nextIndex[peerIdx]
+	for _, entry := range entries.Entries {
+		str += fmt.Sprintf("%d:%v ", i, entry.Command)
+		i++
+	}
+	str += "]"
+	str += fmt.Sprintf(" PREVLOGINDEX: %d, PREVLOGTERM: %d", entries.PrevLogIndex, entries.PrevLogTerm)
+	DPrintf(str)
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntries(peerIdx, request, reply)
@@ -763,8 +808,6 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 
 	// TODO: handle AppendEntries RPC reply
 	// If we got enough successful responses we can update the commitIndex, and other things specified in the paper.
-	// Do we need to handle heartbeats differently? We know this was a heartbeat if len(entries.Entries) == 0
-	// Would it be better to have a separate function for heartbeats to make the code more readable? Probably yes.
 
 	// If successful: update nextIndex and matchIndex for follower (§5.3)
 	if reply.Success {
@@ -779,17 +822,13 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 		}
 	} else {
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-		// TODO: how does the retry happen? Do we need to kick off another goroutine to keep retrying or do we just
-		// keep trying as we get more commands from clients?
-
-		// Okay, according to GPT we handle the retries for a follower in subsequent append entries be they heartbeats or
-		// due to client commands. This means we have to adjust the code for heartbeats to handle log entries for the
-		// specific followers that are behind.
 
 		// If followers crash or run slowly, or if network packets are lost, the leader retries Append-
 		// Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store
 		// all log entries.
 		rf.nextIndex[peerIdx]--
+
+		// TODO: implement retry
 		return
 	}
 
