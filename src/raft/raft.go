@@ -216,11 +216,11 @@ type AppendEntriesReply struct {
 // This runs on a separate goroutine that is used to send the RPC and receive the reply. After this function builds the
 // reply, it is sent it back to the main goroutine using the voteChan. We use the mutex when we mutate the shared state
 // of the Raft server.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+func (rf *Raft) RequestVote(vote *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("Server %d: RequestVote RPC received from server %d, votedFor: %d, term: %d", rf.me, args.CandidateId, rf.votedFor, rf.currentTerm)
+	DPrintf("Server %d: RequestVote RPC received from server %d, votedFor: %d, term: %d", rf.me, vote.CandidateId, rf.votedFor, rf.currentTerm)
 
 	// Initialize reply
 	reply.Term = rf.currentTerm
@@ -229,24 +229,24 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Reset the election timeout because we have received a RequestVote RPC
 	//rf.lastContact = time.Now()
 
-	if args.Term > rf.currentTerm {
+	if vote.Term > rf.currentTerm {
 		//DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
-		DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, args.Term, rf.currentTerm)
+		DPrintf("Server %d: RequestVote RPC received with term %d > currentTerm %d. Updating my term", rf.me, vote.Term, rf.currentTerm)
 
-		rf.currentTerm = args.Term
+		rf.currentTerm = vote.Term
 		rf.votedFor = NobodyID
 		rf.persist()
 		rf.setState(Follower)
 	}
 
 	// Reply false if term < currentTerm
-	if args.Term < rf.currentTerm {
-		DPrintf("Server %d: RequestVote RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, args.CandidateId, args.Term, rf.currentTerm)
+	if vote.Term < rf.currentTerm {
+		DPrintf("Server %d: RequestVote RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, vote.CandidateId, vote.Term, rf.currentTerm)
 		return
 	}
 
 	// If votedFor is null or candidateId, and candidate’s log is at least as up-to-date as receiver’s log, grant vote
-	if rf.votedFor == NobodyID || rf.votedFor == args.CandidateId {
+	if rf.votedFor == NobodyID || rf.votedFor == vote.CandidateId {
 
 		// Check if candidate's log is at least as up-to-date as receiver's log
 		lastLogIndex := len(rf.log)
@@ -255,17 +255,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			lastLogTerm = rf.log[lastLogIndex-1].Term
 		}
 
-		if args.LastLogTerm > lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex >= lastLogIndex) {
+		if vote.LastLogTerm > lastLogTerm || (vote.LastLogTerm == lastLogTerm && vote.LastLogIndex >= lastLogIndex) {
 			// Reset the election timeout because we have granted a vote
 			rf.lastContact = time.Now()
 			// Check if candidate's log is at least as up-to-date as receiver's log
 			// if args.LastLogTerm > rf.lastLogTerm() || (args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.lastLogIndex()) {
 			reply.VoteGranted = true
-			rf.votedFor = args.CandidateId
+			rf.votedFor = vote.CandidateId
 			rf.persist()
-			DPrintf("Server %d: Vote granted to server %d", rf.me, args.CandidateId)
+			DPrintf("Server %d: Vote granted to server %d", rf.me, vote.CandidateId)
 		} else {
-			DPrintf("Server %d: RequestVote RPC reply sent to server %d. Candidate's log is not up-to-date", rf.me, args.CandidateId)
+			DPrintf("Server %d: RequestVote RPC reply sent to server %d. Candidate's log is not up-to-date", rf.me, vote.CandidateId)
 		}
 	}
 }
