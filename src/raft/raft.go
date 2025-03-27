@@ -275,8 +275,10 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 	defer rf.mu.Unlock()
 
 	// Your code here (3A, 3B).
-	DPrintf("Server %d: AppendEntries RPC received from server %d, term: %d, state: %d PREVLOGINDEX %d", rf.me, leader.LeaderId, leader.Term, rf.State(), leader.PrevLogIndex)
-	rf.debugPrintLog()
+	if len(leader.Entries) > 0 {
+		DPrintf("Server %d: AppendEntries RPC received from leader %d, term: %d, state: %d PREVLOGINDEX %d", rf.me, leader.LeaderId, leader.Term, rf.State(), leader.PrevLogIndex)
+		rf.debugPrintLog()
+	}
 
 	// Initialize reply
 	reply.Term = rf.currentTerm
@@ -398,7 +400,7 @@ func (rf *Raft) debugPrintLog() {
 		str += fmt.Sprintf("%d:%v ", i+1, entry.Command)
 	}
 	str += "]"
-	str += fmt.Sprintf(" commitIndex: %d, lastApplied: %d", rf.commitIndex, rf.lastApplied)
+	str += fmt.Sprintf(" commitIndex: %d, lastApplied: %d, term: %d", rf.commitIndex, rf.lastApplied, rf.currentTerm)
 	DPrintf(str)
 }
 
@@ -414,7 +416,7 @@ func (rf *Raft) applyCommittedEntries() {
 			Command:      entry.Command,
 			CommandIndex: rf.lastApplied,
 		}
-		DPrintf("Server %d: Applied log entry %v at index %d to state machine", rf.me, entry.Command, rf.lastApplied)
+		DPrintf("Leader %d: Applied log entry %v at index %d to state machine", rf.me, entry.Command, rf.lastApplied)
 	}
 }
 
@@ -542,6 +544,7 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 	rf.log = append(rf.log, logent)
 	rf.persist()
 	rf.matchIndex[rf.me] = len(rf.log) // update matchIndex for leader
+	rf.nextIndex[rf.me] = len(rf.log) + 1
 
 	DPrintf("POOP Server %d: Log entry %v appended to log at index %d. Length of log: %d", rf.me, command, index, len(rf.log))
 
@@ -565,7 +568,8 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 			if entries.PrevLogIndex > 0 {
 				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
 			}
-			entries.Entries = rf.log[rf.nextIndex[idx]-1:]
+			//entries.Entries = rf.log[rf.nextIndex[idx]-1:]
+			entries.Entries = append([]*logEntry{}, rf.log[rf.nextIndex[idx]-1:]...)
 		}
 
 		DPrintf("Server %d: Sending AppendEntries w/ COMMAND to server %d, entries: %v", rf.me, idx, entries.Entries)
@@ -625,7 +629,7 @@ func (rf *Raft) ticker() {
 				rf.mu.Lock()
 				rf.lastHeartbeat = time.Now()
 				rf.mu.Unlock()
-				DPrintf("Server %d: Sending heartbeats to peers, commitIndex: %d", rf.me, rf.commitIndex)
+				DPrintf("Leader %d: Sending heartbeats to peers, commitIndex: %d", rf.me, rf.commitIndex)
 
 				// send heartbeats to all peers
 				for idx := range rf.peers {
@@ -784,14 +788,14 @@ RETRY:
 	reply := &AppendEntriesReply{}
 	if len(entries.Entries) > 0 {
 		rf.debugPrintLog()
-		str := fmt.Sprintf("Server %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
+		str := fmt.Sprintf("Leader %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
 		i := rf.nextIndex[peerIdx]
 		for _, entry := range entries.Entries {
 			str += fmt.Sprintf("%d:%v ", i, entry.Command)
 			i++
 		}
 		str += "]"
-		str += fmt.Sprintf(" PREVLOGINDEX: %d, PREVLOGTERM: %d", entries.PrevLogIndex, entries.PrevLogTerm)
+		str += fmt.Sprintf(" PREVLOGINDEX: %d, PREVLOGTERM: %d, AE TERM: %d, CURRENT TERM: %d", entries.PrevLogIndex, entries.PrevLogTerm, entries.Term, rf.currentTerm)
 		DPrintf(str)
 	}
 	rf.mu.Unlock()
@@ -799,22 +803,22 @@ RETRY:
 	ok := rf.sendAppendEntries(peerIdx, request, reply)
 	if !ok {
 		if len(entries.Entries) > 0 {
-			DPrintf("Server %d: AppendEntries RPC to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
+			DPrintf("Leader %d: AppendEntries RPC to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
 			// Retry after sleeping for a very short time with some jitter
 			jitter := time.Duration(rand.Int63()%5) * time.Millisecond
 			sleep := 5*time.Millisecond + jitter
 			time.Sleep(sleep)
 			goto RETRY
 		}
-		DPrintf("Server %d: Hearbeat AE to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
+		DPrintf("Leader %d: Hearbeat AE to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
 		return
 	}
 
 	rf.mu.Lock()
-	DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, peerIdx)
+	DPrintf("Leader %d: AppendEntries RPC reply received from server %d. entriesTerm: %d, myTerm: %d peerTerm %d", rf.me, peerIdx, entries.Term, rf.currentTerm, reply.Term)
 	if reply.Term > rf.currentTerm {
 		// become follower
-		DPrintf("Server %d: Became follower because we got a reply with a new term. Our term: %d, Response term: %d", rf.me, rf.currentTerm, reply.Term)
+		DPrintf("Leader %d: Became follower because we got a reply with a new term. Our term: %d, Response term: %d", rf.me, rf.currentTerm, reply.Term)
 		rf.votedFor = NobodyID
 		rf.currentTerm = reply.Term // update currentTerm
 		rf.persist()
@@ -823,7 +827,6 @@ RETRY:
 		return
 	}
 
-	// TODO: handle AppendEntries RPC reply
 	// If we got enough successful responses we can update the commitIndex, and other things specified in the paper.
 
 	// If successful: update nextIndex and matchIndex for follower (§5.3)
@@ -839,7 +842,7 @@ RETRY:
 		}
 	} else {
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
-		DPrintf("Server %d: AppendEntries RPC to server %d failed bc of log inconsistency. Next index %d -> %d", rf.me, peerIdx, rf.nextIndex[peerIdx], rf.nextIndex[peerIdx]-1)
+		DPrintf("Leader %d: AppendEntries RPC to server %d failed bc of log inconsistency. Next index %d -> %d", rf.me, peerIdx, rf.nextIndex[peerIdx], rf.nextIndex[peerIdx]-1)
 
 		// If followers crash or run slowly, or if network packets are lost, the leader retries Append-
 		// Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store
@@ -850,6 +853,11 @@ RETRY:
 			rf.nextIndex[peerIdx] = 1
 		}
 
+		// Adjust the entries to send to the follower
+		// If the follower is behind, we need to send the entries starting from the nextIndex
+		//entries.Entries = rf.log[rf.nextIndex[peerIdx]-1:]
+		entries.Entries = append([]*logEntry{}, rf.log[rf.nextIndex[peerIdx]-1:]...)
+
 		rf.mu.Unlock()
 
 		// Retry after sleeping for a very short time with some jitter
@@ -859,30 +867,30 @@ RETRY:
 		goto RETRY
 	}
 
-	DPrintf("Server %d: AE RESPONSE HANDLE log length: %d, nextIndex: %v, matchIndex: %v, commitIndex: %d", rf.me, len(rf.log), rf.nextIndex, rf.matchIndex, rf.commitIndex)
+	DPrintf("Leader %d: AE RESPONSE HANDLE log length: %d, nextIndex: %v, matchIndex: %v, commitIndex: %d", rf.me, len(rf.log), rf.nextIndex, rf.matchIndex, rf.commitIndex)
 
 	// Here we want to check if we can commit any log entries. We can only commit log entries that have been replicated
 	// to a majority of servers, including this server (the leader).
 	// If there exists an N such that N > commitIndex, a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 	// set commitIndex = N (§5.3)
 	for N := len(rf.log); N >= 0 && N > rf.commitIndex; N-- {
-		DPrintf("Server %d: Checking commit for N=%d, commitIndex=%d, log length=%d", rf.me, N, rf.commitIndex, len(rf.log))
+		DPrintf("Leader %d: Checking commit for N=%d, commitIndex=%d, log length=%d", rf.me, N, rf.commitIndex, len(rf.log))
 		if rf.log[N-1].Term == rf.currentTerm {
-			DPrintf("Server %d: Entry at N=%d has matching term %d", rf.me, N, rf.currentTerm)
+			DPrintf("Leader %d: Entry at N=%d has matching term %d", rf.me, N, rf.currentTerm)
 			matched := 1
 			for idx := range rf.peers {
 				if idx == rf.me {
 					continue
 				}
-				DPrintf("Server %d: Checking peer %d: matchIndex=%d, N=%d", rf.me, idx, rf.matchIndex[idx], N)
+				DPrintf("Leader %d: Checking peer %d: matchIndex=%d, N=%d", rf.me, idx, rf.matchIndex[idx], N)
 				if rf.matchIndex[idx] >= N {
 					matched++
 				}
 			}
-			DPrintf("Server %d: For N=%d: matched=%d, needed=%d", rf.me, N, matched, len(rf.peers)/2+1)
+			DPrintf("Leader %d: For N=%d: matched=%d, needed=%d", rf.me, N, matched, len(rf.peers)/2+1)
 			if matched > len(rf.peers)/2 {
 				rf.commitIndex = N
-				DPrintf("Server %d: CommitIndex set to %d", rf.me, rf.commitIndex)
+				DPrintf("Leader %d: CommitIndex set to %d", rf.me, rf.commitIndex)
 
 				// When the entry has been safely replicated, the leader applies the entry to its
 				// state machine and returns the result.
@@ -890,7 +898,7 @@ RETRY:
 				break
 			}
 		} else {
-			DPrintf("Server %d: Entry at N=%d has term %d != currentTerm %d", rf.me, N, rf.log[N-1].Term, rf.currentTerm)
+			DPrintf("Leader %d: Entry at N=%d has term %d != currentTerm %d", rf.me, N, rf.log[N-1].Term, rf.currentTerm)
 		}
 	}
 	rf.mu.Unlock()
