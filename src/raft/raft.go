@@ -309,7 +309,7 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 
 	// 1. Reply false if term < currentTerm (§5.1)
 	if leader.Term < rf.currentTerm {
-		DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Term %d < currentTerm %d", rf.me, leader.LeaderId, leader.Term, rf.currentTerm)
+		DPrintf("Server %d: AppendEntries RPC reply sent to leader %d. leaderTerm %d < myTerm %d", rf.me, leader.LeaderId, leader.Term, rf.currentTerm)
 		return // Failed AppendEntries
 	}
 
@@ -565,7 +565,6 @@ func (rf *Raft) startAgreement(index int, command interface{}) {
 			if entries.PrevLogIndex > 0 {
 				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
 			}
-			//entries.Entries = rf.log[rf.nextIndex[idx]-1:]
 			entries.Entries = rf.log[rf.nextIndex[idx]-1:]
 		}
 
@@ -672,7 +671,7 @@ func (rf *Raft) ticker() {
 			rf.setState(Candidate)
 			rf.votedFor = NobodyID
 
-			DPrintf("Server %d: Election started. Sending RequestVote RPC to peers", rf.me)
+			DPrintf("Server %d: ELECTION STARTED. Sending RequestVote RPC to peers", rf.me)
 
 			// reset the election timeout to now + sometime + random jitter
 			rf.electionTimeout = electionTimeoutMin*time.Millisecond + time.Duration(rand.Int63()%electionTimeoutVar)*time.Millisecond // between 1.5 and 2 seconds
@@ -773,24 +772,41 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 }
 
 func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntries) {
+RETRY:
 	rf.mu.Lock()
+
+	if rf.State() != Leader {
+		rf.mu.Unlock()
+		return
+	}
+
 	request := entries
 	reply := &AppendEntriesReply{}
-	rf.debugPrintLog()
-	str := fmt.Sprintf("Server %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
-	i := rf.nextIndex[peerIdx]
-	for _, entry := range entries.Entries {
-		str += fmt.Sprintf("%d:%v ", i, entry.Command)
-		i++
+	if len(entries.Entries) > 0 {
+		rf.debugPrintLog()
+		str := fmt.Sprintf("Server %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
+		i := rf.nextIndex[peerIdx]
+		for _, entry := range entries.Entries {
+			str += fmt.Sprintf("%d:%v ", i, entry.Command)
+			i++
+		}
+		str += "]"
+		str += fmt.Sprintf(" PREVLOGINDEX: %d, PREVLOGTERM: %d", entries.PrevLogIndex, entries.PrevLogTerm)
+		DPrintf(str)
 	}
-	str += "]"
-	str += fmt.Sprintf(" PREVLOGINDEX: %d, PREVLOGTERM: %d", entries.PrevLogIndex, entries.PrevLogTerm)
-	DPrintf(str)
 	rf.mu.Unlock()
 
 	ok := rf.sendAppendEntries(peerIdx, request, reply)
 	if !ok {
-		DPrintf("Server %d: AppendEntries RPC to server %d failed", rf.me, peerIdx)
+		if len(entries.Entries) > 0 {
+			DPrintf("Server %d: AppendEntries RPC to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
+			// Retry after sleeping for a very short time with some jitter
+			jitter := time.Duration(rand.Int63()%5) * time.Millisecond
+			sleep := 5*time.Millisecond + jitter
+			time.Sleep(sleep)
+			goto RETRY
+		}
+		DPrintf("Server %d: Hearbeat AE to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
 		return
 	}
 
@@ -799,11 +815,12 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 	DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, peerIdx)
 	if reply.Term > rf.currentTerm {
 		// become follower
+		DPrintf("Server %d: Became follower because we got a reply with a new term. Our term: %d, Response term: %d", rf.me, rf.currentTerm, reply.Term)
 		rf.votedFor = NobodyID
 		rf.currentTerm = reply.Term // update currentTerm
 		rf.persist()
 		rf.setState(Follower)
-		DPrintf("Server %d: Became follower", rf.me)
+		return
 	}
 
 	// TODO: handle AppendEntries RPC reply
@@ -822,14 +839,24 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 		}
 	} else {
 		// If AppendEntries fails because of log inconsistency: decrement nextIndex and retry (§5.3)
+		DPrintf("Server %d: AppendEntries RPC to server %d failed bc of log inconsistency. Next index %d -> %d", rf.me, peerIdx, rf.nextIndex[peerIdx], rf.nextIndex[peerIdx]-1)
 
 		// If followers crash or run slowly, or if network packets are lost, the leader retries Append-
 		// Entries RPCs indefinitely (even after it has responded to the client) until all followers eventually store
 		// all log entries.
-		rf.nextIndex[peerIdx]--
+		if rf.nextIndex[peerIdx] > 1 {
+			rf.nextIndex[peerIdx]--
+		} else {
+			rf.nextIndex[peerIdx] = 1
+		}
 
-		// TODO: implement retry
-		return
+		rf.mu.Unlock()
+
+		// Retry after sleeping for a very short time with some jitter
+		jitter := time.Duration(rand.Int63()%5) * time.Millisecond
+		sleep := 5*time.Millisecond + jitter
+		time.Sleep(sleep)
+		goto RETRY
 	}
 
 	DPrintf("Server %d: AE RESPONSE HANDLE log length: %d, nextIndex: %v, matchIndex: %v, commitIndex: %d", rf.me, len(rf.log), rf.nextIndex, rf.matchIndex, rf.commitIndex)
