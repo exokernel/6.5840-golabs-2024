@@ -811,7 +811,6 @@ RETRY:
 	}
 
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	DPrintf("Server %d: AppendEntries RPC reply received from server %d", rf.me, peerIdx)
 	if reply.Term > rf.currentTerm {
 		// become follower
@@ -820,6 +819,7 @@ RETRY:
 		rf.currentTerm = reply.Term // update currentTerm
 		rf.persist()
 		rf.setState(Follower)
+		rf.mu.Unlock()
 		return
 	}
 
@@ -893,6 +893,7 @@ RETRY:
 			DPrintf("Server %d: Entry at N=%d has term %d != currentTerm %d", rf.me, N, rf.log[N-1].Term, rf.currentTerm)
 		}
 	}
+	rf.mu.Unlock()
 }
 
 // the service or tester wants to create a Raft server. the ports
