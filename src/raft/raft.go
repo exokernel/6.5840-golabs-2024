@@ -776,6 +776,7 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 }
 
 func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntries) {
+	retry := false
 RETRY:
 	rf.mu.Lock()
 
@@ -788,7 +789,12 @@ RETRY:
 	reply := &AppendEntriesReply{}
 	if len(entries.Entries) > 0 {
 		rf.debugPrintLog()
-		str := fmt.Sprintf("Leader %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
+		var str string
+		if retry {
+			str = fmt.Sprintf("RETRY: Leader %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
+		} else {
+			str = fmt.Sprintf("Leader %d: Sending AppendEntries to server %d, entries: [", rf.me, peerIdx)
+		}
 		i := rf.nextIndex[peerIdx]
 		for _, entry := range entries.Entries {
 			str += fmt.Sprintf("%d:%v ", i, entry.Command)
@@ -808,6 +814,7 @@ RETRY:
 			jitter := time.Duration(rand.Int63()%5) * time.Millisecond
 			sleep := 5*time.Millisecond + jitter
 			time.Sleep(sleep)
+			retry = true
 			goto RETRY
 		}
 		DPrintf("Leader %d: Hearbeat AE to server %d failed. Entries %d", rf.me, peerIdx, len(entries.Entries))
@@ -856,6 +863,13 @@ RETRY:
 		// Adjust the entries to send to the follower
 		// If the follower is behind, we need to send the entries starting from the nextIndex
 		//entries.Entries = rf.log[rf.nextIndex[peerIdx]-1:]
+		entries = &AppendEntries{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			LeaderCommit: rf.commitIndex,
+			PrevLogIndex: rf.nextIndex[peerIdx] - 1,
+			PrevLogTerm:  rf.log[rf.nextIndex[peerIdx]-2].Term,
+		}
 		entries.Entries = append([]*logEntry{}, rf.log[rf.nextIndex[peerIdx]-1:]...)
 
 		rf.mu.Unlock()
@@ -864,6 +878,7 @@ RETRY:
 		jitter := time.Duration(rand.Int63()%5) * time.Millisecond
 		sleep := 5*time.Millisecond + jitter
 		time.Sleep(sleep)
+		retry = true
 		goto RETRY
 	}
 
