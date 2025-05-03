@@ -274,128 +274,76 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// Your code here (3A, 3B).
-	if len(leader.Entries) > 0 {
-		DPrintf("Server %d: AppendEntries RPC received from leader %d, term: %d, state: %d PREVLOGINDEX %d", rf.me, leader.LeaderId, leader.Term, rf.State(), leader.PrevLogIndex)
-		rf.debugPrintLog()
-	}
-
 	// Initialize reply
 	reply.Term = rf.currentTerm
 	reply.Success = false
+
+	// If term in the request > currentTerm, update currentTerm and convert to follower
 	if leader.Term > rf.currentTerm {
-		DPrintf("Server %d: AppendEntries RPC received with term %d > currentTerm %d. Updating my term", rf.me, leader.Term, rf.currentTerm)
+		DPrintf("Server %d: AppendEntries RPC received with term %d > currentTerm %d. Updating term and becoming follower",
+			rf.me, leader.Term, rf.currentTerm)
 		rf.currentTerm = leader.Term
 		rf.votedFor = NobodyID
 		rf.persist()
-		if rf.State() != Follower {
-			DPrintf("Server %d: Becoming follower: received term %d > currentTerm %d", rf.me, leader.Term, rf.currentTerm)
-			rf.setState(Follower)
-		}
+		rf.setState(Follower)
 	}
 
-	// Reset the election timeout because we have received an AppendEntries RPC
+	// 1. Reply false if term < currentTerm
+	if leader.Term < rf.currentTerm {
+		return
+	}
+
+	// Reset election timeout since we've heard from leader
 	rf.lastContact = time.Now()
 
-	switch rf.State() {
-	case Follower:
-		// already a follower, just log the message
-		DPrintf("Server %d: Recieved AppendEntries and already a follower. Number of log entries: %d", rf.me, len(leader.Entries))
-	case Candidate:
-		// switch to follower
-		rf.setState(Follower)
-		DPrintf("Server %d: Recieved AppendEntries and became follower", rf.me)
-	case Leader:
-		DPrintf("Server %d: Recieved AppendEntries but I'm a leader. Something is wrong", rf.me)
-	}
-
-	// 1. Reply false if term < currentTerm (§5.1)
-	if leader.Term < rf.currentTerm {
-		DPrintf("Server %d: AppendEntries RPC reply sent to leader %d. leaderTerm %d < myTerm %d", rf.me, leader.LeaderId, leader.Term, rf.currentTerm)
-		return // Failed AppendEntries
-	}
-
-	// The leader will have decremented nextIndex for the follower that failed to append.
-	if len(leader.Entries) > 0 {
-		DPrintf("Server %d: AppendEntries RPC received from server %d", rf.me, leader.LeaderId)
-		// Print the log entries the server sent
-		str := fmt.Sprintf("Server %d: Got APPENDEntries: [", rf.me)
-		i := leader.PrevLogIndex + 1
-		for _, entry := range leader.Entries {
-			str += fmt.Sprintf("%d:%v ", i, entry.Command)
-			i++
-		}
-		str += "]"
-		DPrintf(str)
-		// 2. Reply false if log doesn’t contain an entry at prevLogIndex whose term matches prevLogTerm (§5.3)
-		prevLogSliceIndex := leader.PrevLogIndex - 1
-
-		if leader.PrevLogIndex == 0 {
-			// This is the first entry in the log, no need to check previous AppendEntries
-			// Just append the entries to the log
-			rf.log = append(rf.log, leader.Entries...)
-			rf.persist()
-			reply.Success = true
-			DPrintf("Server %d: Appended first entries to log, length now %d: leaderCommit: %d, commitIndex: %d", rf.me, len(rf.log), leader.LeaderCommit, rf.commitIndex)
-			if leader.LeaderCommit > rf.commitIndex {
-				rf.commitIndex = min(leader.LeaderCommit, len(rf.log))
-				rf.applyCommittedEntries()
-			}
+	// 2. Reply false if log doesn't contain an entry at prevLogIndex whose term matches prevLogTerm
+	if leader.PrevLogIndex > 0 {
+		if len(rf.log) < leader.PrevLogIndex {
+			// Log too short
 			return
 		}
 
-		if prevLogSliceIndex < 0 || prevLogSliceIndex >= len(rf.log) {
-			DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, leader.PrevLogIndex, prevLogSliceIndex)
-			DPrintf("Server %d: my log has %d entries and my commitIndex is %d and my lastApplied is %d", rf.me, len(rf.log), rf.commitIndex, rf.lastApplied)
-			//panic("Index out of bounds")
-			return // Failed AppendEntries
+		if rf.log[leader.PrevLogIndex-1].Term != leader.PrevLogTerm {
+			// Term mismatch
+			return
 		}
-		matchingPrevIndexLogEntry := rf.log[prevLogSliceIndex]
-		if matchingPrevIndexLogEntry.Term != leader.PrevLogTerm {
-			DPrintf("Server %d: AppendEntries RPC reply sent to server %d. Log doesn't contain an entry at prevLogIndex %d whose term matches prevLogTerm %d", rf.me, leader.LeaderId, leader.PrevLogIndex, leader.PrevLogTerm)
-			return // Failed AppendEntries
-		}
-
-		// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
-		for i := prevLogSliceIndex + 1; i < len(rf.log); i++ {
-			// Prevent out-of-range on leader.Entries
-			if i-prevLogSliceIndex-1 >= len(leader.Entries) {
-				// The leader didn’t send enough entries to compare further,
-				// so no more conflict checks here.
-				rf.log = truncateLog(rf.log, i)
-				break
-			}
-
-			if rf.log[i].Term != leader.Entries[i-prevLogSliceIndex-1].Term {
-				DPrintf("Server %d: Conflicting log entry found at index %d. Truncating log at index %d", rf.me, i, i)
-				rf.log = truncateLog(rf.log, i)
-				break
-			}
-		}
-
-		// 4. Append any new entries not already in the log
-		for i, entry := range leader.Entries {
-			logIndex := leader.PrevLogIndex + 1 + i
-			if logIndex-1 >= len(rf.log) {
-				DPrintf("Server %d: Appending log entry %v at index %d prev log index %d", rf.me, entry.Command, logIndex, leader.PrevLogIndex)
-				rf.log = append(rf.log, entry)
-			}
-		}
-		rf.debugPrintLog()
-		rf.persist()
 	}
 
-	// 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index of last new entry) (§5.3)
-	// The min() ensures that the follower's commitIndex is updated safely, preventing it committing entries that it
-	// hasn't received yet. The leader's commitIndex could be beyond the follower's last log index. In that case, we
-	// adjust the commitIndex to the follower's last log index.
+	// 3. If an existing entry conflicts with a new one, delete the existing entry and all that follow it
+	newLogIndex := leader.PrevLogIndex
+	for _, entry := range leader.Entries {
+		newLogIndex++
+
+		if newLogIndex <= len(rf.log) {
+			// Check for conflict
+			if rf.log[newLogIndex-1].Term != entry.Term {
+				// Conflict found, truncate log from here
+				rf.log = rf.log[:newLogIndex-1]
+				rf.persist()
+				break
+			}
+		} else {
+			// We've reached the end of the existing log
+			break
+		}
+	}
+
+	// 4. Append any new entries not already in the log
+	for i, entry := range leader.Entries {
+		logIndex := leader.PrevLogIndex + i + 1
+		if logIndex > len(rf.log) {
+			rf.log = append(rf.log, entry)
+		}
+	}
+	rf.persist()
+
+	// 5. Update commitIndex if needed
 	if leader.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = min(leader.LeaderCommit, len(rf.log))
 		rf.applyCommittedEntries()
 	}
 
-	reply.Term = rf.currentTerm
-	reply.Success = true // Successful AppendEntries
+	reply.Success = true
 }
 
 func (rf *Raft) debugPrintLog() {
