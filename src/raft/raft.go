@@ -67,7 +67,7 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type logEntry struct {
+type LogEntry struct {
 	Command interface{} // command for state machine
 	Term    int         // term when entry was received by leader (first index is 1)
 }
@@ -85,9 +85,9 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// Persistent State
-	currentTerm int         // latest term server has seen (initialized to 0 on first boot, increases monotonically)
-	votedFor    int         // candidateId that received vote in current term (or null if none)
-	log         []*logEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
+	currentTerm int        // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	votedFor    int        // candidateId that received vote in current term (or null if none)
+	log         []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader (first index is 1)
 
 	// Volatile State on All Servers
 	commitIndex int // index of highest log entry known to be committed (initialized to 0, increases monotonically)
@@ -197,12 +197,12 @@ type RequestVoteReply struct {
 }
 
 type AppendEntries struct {
-	Term         int         // leader’s term
-	LeaderId     int         // so follower can redirect clients
-	PrevLogIndex int         // index of log entry immediately preceding new ones
-	PrevLogTerm  int         // term of PrevLogIndex entry
-	Entries      []*logEntry // log entries to store (empty for heartbeat; may send more than one for efficiency)
-	LeaderCommit int         // leader’s commitIndex
+	Term         int        // leader’s term
+	LeaderId     int        // so follower can redirect clients
+	PrevLogIndex int        // index of log entry immediately preceding new ones
+	PrevLogTerm  int        // term of PrevLogIndex entry
+	Entries      []LogEntry // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	LeaderCommit int        // leader’s commitIndex
 
 }
 
@@ -319,7 +319,6 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 			if rf.log[newLogIndex-1].Term != entry.Term {
 				// Conflict found, truncate log from here
 				rf.log = rf.log[:newLogIndex-1]
-				rf.persist()
 				break
 			}
 		} else {
@@ -332,7 +331,11 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 	for i, entry := range leader.Entries {
 		logIndex := leader.PrevLogIndex + i + 1
 		if logIndex > len(rf.log) {
-			rf.log = append(rf.log, entry)
+			newEntry := LogEntry{
+				Command: entry.Command,
+				Term:    entry.Term,
+			}
+			rf.log = append(rf.log, newEntry)
 		}
 	}
 	rf.persist()
@@ -383,7 +386,7 @@ func min(a, b int) int {
 	return b
 }
 
-func truncateLog(log []*logEntry, index int) []*logEntry {
+func truncateLog(log []LogEntry, index int) []LogEntry {
 	if index < 0 || index > len(log) {
 		return log // Index out of bounds, return the original slice
 	}
@@ -468,7 +471,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := len(rf.log) + 1
 	term := rf.currentTerm
 
-	logent := &logEntry{
+	logent := LogEntry{
 		Command: command,
 		Term:    term,
 	}
@@ -524,8 +527,8 @@ func (rf *Raft) startAgreement() {
 			if entries.PrevLogIndex > 0 {
 				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
 			}
-			//entries.Entries = rf.log[rf.nextIndex[idx]-1:]
-			entries.Entries = append([]*logEntry{}, rf.log[rf.nextIndex[idx]-1:]...)
+			entries.Entries = make([]LogEntry, len(rf.log)-(rf.nextIndex[idx]-1))
+			copy(entries.Entries, rf.log[rf.nextIndex[idx]-1:])
 		}
 
 		DPrintf("Server %d: Sending AppendEntries w/ COMMAND to server %d, entries: %v", rf.me, idx, entries.Entries)
@@ -751,7 +754,11 @@ RETRY:
 
 	entries.PrevLogIndex = prevLogIndex
 	entries.PrevLogTerm = prevLogTerm
-	entries.Entries = rf.log[prevLogIndex:]
+
+	// Create a deep copy of the entries by making a new slice and copying each element
+	entriesCopy := make([]LogEntry, len(rf.log)-prevLogIndex)
+	copy(entriesCopy, rf.log[prevLogIndex:])
+	entries.Entries = entriesCopy
 
 	request := entries
 	reply := &AppendEntriesReply{}
@@ -844,7 +851,10 @@ RETRY:
 			entries.PrevLogTerm = 0 // Term for log entries at index 0 is always 0
 		}
 
-		entries.Entries = append([]*logEntry{}, rf.log[rf.nextIndex[peerIdx]-1:]...)
+		//entries.Entries = append([]LogEntry{}, rf.log[rf.nextIndex[peerIdx]-1:]...)
+		entriesCopy := make([]LogEntry, len(rf.log)-(rf.nextIndex[peerIdx]-1))
+		copy(entriesCopy, rf.log[rf.nextIndex[peerIdx]-1:])
+		entries.Entries = entriesCopy
 
 		rf.mu.Unlock()
 
