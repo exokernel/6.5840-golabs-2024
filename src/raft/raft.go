@@ -504,29 +504,9 @@ func (rf *Raft) startAgreement() {
 			continue // don't send AppendEntries RPC to self
 		}
 
-		entries := &AppendEntries{
-			Term:         rf.currentTerm,
-			LeaderId:     rf.me,
-			LeaderCommit: rf.commitIndex,
-		}
-
-		// If last log index ≥ nextIndex for a follower: send AppendEntries RPC with log entries starting at nextIndex
-		// If is at least one log entry to send at this point because we just appended a log entry
-		if rf.nextIndex[idx] <= len(rf.log) {
-			DPrintf("Server %d: Setting PrevLogIndex in AE to %d for server %d", rf.me, rf.nextIndex[idx]-1, idx)
-			entries.PrevLogIndex = rf.nextIndex[idx] - 1
-			if entries.PrevLogIndex > 0 {
-				entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
-			}
-			entries.Entries = make([]LogEntry, len(rf.log)-(rf.nextIndex[idx]-1))
-			copy(entries.Entries, rf.log[rf.nextIndex[idx]-1:])
-		}
-
-		DPrintf("Server %d: Sending AppendEntries w/ COMMAND to server %d, entries: %v", rf.me, idx, entries.Entries)
-
-		go func(i int, ae *AppendEntries) {
-			rf.appendEntriesAndHandleResponse(i, ae)
-		}(idx, entries)
+		go func(i int) {
+			rf.appendEntriesAndHandleResponse(i)
+		}(idx)
 	}
 }
 
@@ -586,18 +566,12 @@ func (rf *Raft) ticker() {
 					if idx == rf.me {
 						continue // don't send AppendEntries RPC to self
 					}
-					// send AppendEntries RPC to peer
-					heartbeatEnt := &AppendEntries{
-						Term:         rf.currentTerm,
-						LeaderId:     rf.me,
-						LeaderCommit: rf.commitIndex,
-					}
 
 					wg.Add(1)
 					peerIdx := idx
 					go func() {
 						defer wg.Done()
-						rf.appendEntriesAndHandleResponse(peerIdx, heartbeatEnt)
+						rf.appendEntriesAndHandleResponse(peerIdx)
 					}()
 				}
 			}
@@ -712,7 +686,7 @@ func (rf *Raft) requestVoteAndHandleResponse(peerIdx int) {
 	}
 }
 
-func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntries) {
+func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int) {
 	for {
 		rf.mu.Lock()
 
@@ -722,8 +696,11 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int, entries *AppendEntri
 			return
 		}
 
-		// Always update the term in the request to the current term
-		entries.Term = rf.currentTerm
+		entries := &AppendEntries{
+			Term:         rf.currentTerm,
+			LeaderId:     rf.me,
+			LeaderCommit: rf.commitIndex,
+		}
 
 		// Make sure entries.PrevLogIndex and entries.PrevLogTerm are set correctly
 		// Start with what the follower might have
