@@ -741,6 +741,18 @@ RETRY:
 		return
 	}
 
+	// Make sure entries.PrevLogIndex and entries.PrevLogTerm are set correctly
+	// Start with what the follower might have
+	prevLogIndex := rf.nextIndex[peerIdx] - 1
+	var prevLogTerm int
+	if prevLogIndex > 0 && prevLogIndex <= len(rf.log) {
+		prevLogTerm = rf.log[prevLogIndex-1].Term
+	}
+
+	entries.PrevLogIndex = prevLogIndex
+	entries.PrevLogTerm = prevLogTerm
+	entries.Entries = rf.log[prevLogIndex:]
+
 	request := entries
 	reply := &AppendEntriesReply{}
 	if len(entries.Entries) > 0 {
