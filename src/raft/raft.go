@@ -862,14 +862,20 @@ RETRY:
 
 		// Adjust the entries to send to the follower
 		// If the follower is behind, we need to send the entries starting from the nextIndex
-		//entries.Entries = rf.log[rf.nextIndex[peerIdx]-1:]
 		entries = &AppendEntries{
 			Term:         rf.currentTerm,
 			LeaderId:     rf.me,
 			LeaderCommit: rf.commitIndex,
 			PrevLogIndex: rf.nextIndex[peerIdx] - 1,
-			PrevLogTerm:  rf.log[rf.nextIndex[peerIdx]-2].Term,
 		}
+
+		// Only set PrevLogTerm if PrevLogIndex is valid
+		if entries.PrevLogIndex > 0 {
+			entries.PrevLogTerm = rf.log[entries.PrevLogIndex-1].Term
+		} else {
+			entries.PrevLogTerm = 0 // Term for log entries at index 0 is always 0
+		}
+
 		entries.Entries = append([]*logEntry{}, rf.log[rf.nextIndex[peerIdx]-1:]...)
 
 		rf.mu.Unlock()
