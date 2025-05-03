@@ -358,7 +358,14 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 
 		// 3. If an existing entry conflicts with a new one (same index but different terms), delete the existing entry and all that follow it (§5.3)
 		for i := prevLogSliceIndex + 1; i < len(rf.log); i++ {
-			// i - prevLogSliceIndex - 1 gives the correct index into args.Entries
+			// Prevent out-of-range on leader.Entries
+			if i-prevLogSliceIndex-1 >= len(leader.Entries) {
+				// The leader didn’t send enough entries to compare further,
+				// so no more conflict checks here.
+				rf.log = truncateLog(rf.log, i)
+				break
+			}
+
 			if rf.log[i].Term != leader.Entries[i-prevLogSliceIndex-1].Term {
 				DPrintf("Server %d: Conflicting log entry found at index %d. Truncating log at index %d", rf.me, i, i)
 				rf.log = truncateLog(rf.log, i)
@@ -499,8 +506,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntries, reply *Append
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
 	isLeader := true
 
 	// Your code here (3B).
@@ -511,13 +516,26 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		return -1, rf.currentTerm, false
 	}
 
-	index = len(rf.log) + 1 // first index should be one
-	term = rf.currentTerm
+	// Calculate the new entry's index based on the current log length.
+	index := len(rf.log) + 1
+	term := rf.currentTerm
+
+	logent := &logEntry{
+		Command: command,
+		Term:    term,
+	}
+	// Append the log entry to the log
+	rf.log = append(rf.log, logent)
+	rf.persist()
+
+	// Update the nextIndex and matchIndex for the leader
+	rf.matchIndex[rf.me] = len(rf.log)
+	rf.nextIndex[rf.me] = len(rf.log) + 1
 
 	DPrintf("Server %d: Command %v appended to log at index %d", rf.me, command, index)
 
-	// Append to the log and trigger replication to followers (implement this separately)
-	go rf.startAgreement(index, command)
+	// Trigger replication to followers (implement this separately)
+	go rf.startAgreement()
 
 	return index, term, isLeader
 }
@@ -525,28 +543,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // Append the log entry and send AppendEntries RPCs to all other servers to replicate the log.
 // When a majority of servers have appended the log entry, the leader can commit the log entry and apply it to the state machine.
 // The leader's next heartbeat will include the commitIndex, and the followers will apply the log entries up to the commitIndex to their state machines.
-func (rf *Raft) startAgreement(index int, command interface{}) {
+func (rf *Raft) startAgreement() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	sliceIndex := index - 1
-	if sliceIndex < 0 || sliceIndex != len(rf.log) {
-		DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d", rf.me, index, sliceIndex)
-		return
-	}
+	//sliceIndex := index - 1
+	//if sliceIndex < 0 || sliceIndex != len(rf.log) {
+	//	DPrintf("Server %d: Index %d out of bounds, sliceIndex: %d, loglen: %d", rf.me, index, sliceIndex, len(rf.log))
+	//	return
+	//}
 
-	logent := &logEntry{
-		Command: command,
-		Term:    rf.currentTerm,
-	}
-
-	// Append the log entry
-	rf.log = append(rf.log, logent)
-	rf.persist()
-	rf.matchIndex[rf.me] = len(rf.log) // update matchIndex for leader
-	rf.nextIndex[rf.me] = len(rf.log) + 1
-
-	DPrintf("POOP Server %d: Log entry %v appended to log at index %d. Length of log: %d", rf.me, command, index, len(rf.log))
+	// Entries starting from the given index
+	//entriesToSend := rf.log[index-1:]
 
 	// Send AppendEntries RPCs to all other servers to replicate the log
 	for idx := range rf.peers {
