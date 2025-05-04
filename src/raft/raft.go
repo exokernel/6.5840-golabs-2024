@@ -207,8 +207,10 @@ type AppendEntries struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int  // currentTerm, for leader to update itself
-	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	Term          int  // currentTerm, for leader to update itself
+	Success       bool // true if follower contained entry matching prevLogIndex and prevLogTerm
+	ConflictTerm  int  // term of conflicting entry (for optimization)
+	ConflictIndex int  // index of first entry in log that conflicts with new entries (for optimization)
 }
 
 // example RequestVote RPC handler.
@@ -300,11 +302,23 @@ func (rf *Raft) AppendEntries(leader *AppendEntries, reply *AppendEntriesReply) 
 	if leader.PrevLogIndex > 0 {
 		if len(rf.log) < leader.PrevLogIndex {
 			// Log too short
+			reply.ConflictTerm = -1
+			reply.ConflictIndex = len(rf.log)
 			return
 		}
 
 		if rf.log[leader.PrevLogIndex-1].Term != leader.PrevLogTerm {
 			// Term mismatch
+			reply.ConflictTerm = rf.log[leader.PrevLogIndex-1].Term
+
+			// Find first index of the conflicting term
+			reply.ConflictIndex = leader.PrevLogIndex
+			for i := leader.PrevLogIndex - 2; i >= 0; i-- {
+				if rf.log[i].Term != reply.ConflictTerm {
+					reply.ConflictIndex = i + 1
+					break
+				}
+			}
 			return
 		}
 	}
@@ -792,10 +806,26 @@ func (rf *Raft) appendEntriesAndHandleResponse(peerIdx int) {
 			DPrintf("Leader %d: AppendEntries RPC to server %d failed bc of log inconsistency. Next index %d -> %d",
 				rf.me, peerIdx, rf.nextIndex[peerIdx], rf.nextIndex[peerIdx]-1)
 
-			if rf.nextIndex[peerIdx] > 1 {
-				rf.nextIndex[peerIdx]--
+			if reply.ConflictTerm == -1 {
+				// Follower's log is too short
+				rf.nextIndex[peerIdx] = reply.ConflictIndex + 1
 			} else {
-				rf.nextIndex[peerIdx] = 1
+				// Try to find the conflicting term in our log
+				conflictTermIndex := -1
+				for i := len(rf.log) - 1; i >= 0; i-- {
+					if rf.log[i].Term == reply.ConflictTerm {
+						conflictTermIndex = i + 1
+						break
+					}
+				}
+
+				if conflictTermIndex != -1 {
+					// Found the term, jump to after the last entry of that term
+					rf.nextIndex[peerIdx] = conflictTermIndex + 1
+				} else {
+					// Couldn't find the term, jump to follower's first index of the term
+					rf.nextIndex[peerIdx] = reply.ConflictIndex
+				}
 			}
 
 			rf.mu.Unlock()
