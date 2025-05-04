@@ -40,11 +40,11 @@ const (
 )
 
 const NobodyID = -1
-const electionTimeoutMin = 800
+const electionTimeoutMin = 300
 
 // election timeout jitter, we will add a random number of milliseconds between 0 and electionTimeoutVar to the
 // election timeout
-const electionTimeoutVar = 400
+const electionTimeoutVar = 200
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -624,7 +624,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
+		ms := 50 + (rand.Int63() % 100)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 	wg.Wait() // wait for all goroutines to finish
