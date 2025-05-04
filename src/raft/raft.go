@@ -638,7 +638,7 @@ func (rf *Raft) ticker() {
 
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 100)
+		ms := 25 + (rand.Int63() % 25)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
 	wg.Wait() // wait for all goroutines to finish
